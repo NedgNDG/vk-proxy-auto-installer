@@ -1,4 +1,3 @@
-# vk-proxy-auto-installer
 # 🚀 Автоустановщик WireGuard + VK TURN Proxy
 
 Этот скрипт позволяет в одну команду развернуть собственный VPN-сервер с WireGuard и утилитой [vk-turn-proxy](https://github.com/kiper292/vk-turn-proxy) для обхода блокировок и белых списков. 
@@ -19,4 +18,4 @@
 Запустите команду ниже на вашем сервере (рекомендуется чистая ОС Ubuntu/Debian):
 
 ```bash
-bash <(curl -sL [https://raw.githubusercontent.com/NedgNDG/vk-proxy-auto-installer/main/install.sh](https://raw.githubusercontent.com/NedgNDG/vk-proxy-auto-installer/main/install.sh))
+bash <(curl -sL https://raw.githubusercontent.com/NedgNDG/vk-proxy-auto-installer/main/install.sh)
