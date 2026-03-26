@@ -19,6 +19,7 @@
 
 ```bash
 bash <(curl -sL https://raw.githubusercontent.com/NedgNDG/vk-proxy-auto-installer/main/install.sh)
+```bash
 
 ## 📱 Как настроить клиент на телефоне
 Скачайте клиент WG Turn для Android.
