@@ -20,6 +20,11 @@
 ```bash
 bash <(curl -sL https://raw.githubusercontent.com/NedgNDG/vk-proxy-auto-installer/main/install.sh)
 ```
+Для установки конкретной версии используйте команду ниже (вместо v1.0 прописывайте номер конкретной версии)
+
+```bash
+bash <(curl -sL https://raw.githubusercontent.com/NedgNDG/vk-proxy-auto-installer/v1.0/install.sh)
+```
 
 ## 📱 Как настроить клиент на телефоне
 Скачайте клиент WG Turn для Android [wireguard-turn-android](https://github.com/kiper292/wireguard-turn-android).
