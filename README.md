@@ -35,7 +35,7 @@ bash <(curl -sL https://raw.githubusercontent.com/NedgNDG/vk-proxy-auto-installe
 
 На выбор имеются два варианта подключения:
 1. Через модифицированный клиент WireGuard от [kiper292](https://github.com/kiper292/wireguard-turn-android)
-2. Через приложение [v2rayNG](https://github.com/2dust/v2rayng) (или другой V2Ray клиент с xray ядром) и утилитой (vk-turn-proxy-android от MYSOREZ)[https://github.com/MYSOREZ/vk-turn-proxy-android]
+2. Через приложение [v2rayNG](https://github.com/2dust/v2rayng) (или другой V2Ray клиент с xray ядром) и утилитой [vk-turn-proxy-android от MYSOREZ](https://github.com/MYSOREZ/vk-turn-proxy-android)
 
 ### Вариант первый:
 
