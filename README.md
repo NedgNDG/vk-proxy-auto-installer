@@ -59,7 +59,7 @@ bash <(curl -sL https://raw.githubusercontent.com/NedgNDG/vk-proxy-auto-installe
 
 **В приложении VK TURN Proxy:**
 
-0. Скачиваем нужный [android-client](https://github.com/cacggghp/vk-turn-proxy/releases), нажмите **Загрузить новое ядро (файл)** и выберете скачанный файл
+0. Скачайте нужный [android-client](https://github.com/cacggghp/vk-turn-proxy/releases), нажмите **Загрузить новое ядро (файл)** и выберете скачанный файл
 1. В строку Peer впишите: ВАШ_IP_АДРЕС_СЕРВЕРА:56000
 2. Достаньте ссылку звонка ВК и вставьте в строку VK Call links. ВАЖНО!!! Создайте для этих целей твинк аккаунт. Ни в коем случае не нажимаем "Завершить звонок для всех", достаточно просто выйти из него, он никуда не пропадёт
 3. В строку Streams (Потоки) прописываем 4
