@@ -1,6 +1,6 @@
 # 🚀 Автоустановщик WireGuard + VK TURN Proxy
 
-Этот скрипт позволяет в одну команду развернуть собственный VPN-сервер с WireGuard и утилитой vk-turn-proxy от [cacggghp](https://github.com/cacggghp/vk-turn-proxy) или форка от [kiper292](https://github.com/kiper292/vk-turn-proxy) для обхода блокировок и белых списков. 
+Этот скрипт позволяет в одну команду развернуть собственный VPN-сервер с WireGuard и утилитой vk-turn-proxy от [cacggghp](https://github.com/cacggghp/vk-turn-proxy) или форка от [kiper292](https://github.com/kiper292/vk-turn-proxy) для обхода блокировок и белых списков. Подробнее на репозиториях авторов.
 
 Скрипт полностью автоматизирует рутину: ставит пакеты, пробрасывает порты и создает удобную консольную панель управления.
 
@@ -27,7 +27,9 @@ bash <(curl -sL https://raw.githubusercontent.com/NedgNDG/vk-proxy-auto-installe
 bash <(curl -sL https://raw.githubusercontent.com/NedgNDG/vk-proxy-auto-installer/v1.0/install.sh)
 ```
 
-Далее скрипт сделает всё автоматически, вам надо лишь следовать подсказкам
+Далее скрипт сделает всё автоматически, вам надо лишь следовать подсказкамю
+
+Для открытия панели просто пропишите `vk-panel`
 
 ## 📱 Как настроить клиент на телефоне
 
@@ -35,11 +37,11 @@ bash <(curl -sL https://raw.githubusercontent.com/NedgNDG/vk-proxy-auto-installe
 1. Через модифицированный клиент WireGuard от [kiper292](https://github.com/kiper292/wireguard-turn-android)
 2. Через приложение [v2rayNG](https://github.com/2dust/v2rayng) (или другой V2Ray клиент с xray ядром) и утилитой (vk-turn-proxy-android от MYSOREZ)[https://github.com/MYSOREZ/vk-turn-proxy-android]
 
-Вариант первый:
+### Вариант первый:
 
 На сервере запустите vk-panel, выберите пункт 7
 
-В приложении WG Turn:
+**В приложении WG Turn:**
 
 1. Отсканируйте QR-код вашего конфига. НЕ ВКЛЮЧАЕМ!
 2. В блоке Пир измените Endpoint (Конечная точка) на 127.0.0.1:9000
@@ -53,9 +55,9 @@ bash <(curl -sL https://raw.githubusercontent.com/NedgNDG/vk-proxy-auto-installe
 
 Сохраните и подключитесь!
 
-Вариант второй:
+### Вариант второй:
 
-В приложении VK TURN Proxy:
+**В приложении VK TURN Proxy:**
 
 1. В строку Peer впишите: ВАШ_IP_АДРЕС_СЕРВЕРА:56000
 2. Достаньте ссылку звонка ВК и вставьте в строку VK Call links. ВАЖНО!!! Создайте для этих целей твинк аккаунт. Ни в коем случае не нажимаем "Завершить звонок для всех", достаточно просто выйти из него, он никуда не пропадёт
@@ -65,7 +67,7 @@ bash <(curl -sL https://raw.githubusercontent.com/NedgNDG/vk-proxy-auto-installe
 
 На сервере запустите vk-panel, выберите пункт 7
 
-В приложении v2rayNG:
+**В приложении v2rayNG:**
 
 1. Отсканируйте QR-код вашего конфига. НЕ ВКЛЮЧАЕМ!
 2. В блоке Адрес смените айпи на 127.0.0.1, в блоке Порт смените порт на 9000
