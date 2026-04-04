@@ -27,32 +27,70 @@ if [[ "$ARCH" == "x86_64" ]]; then SYS_ARCH="amd64"; else SYS_ARCH="arm64"; fi
 PUBLIC_IP=$(curl -4 -s ifconfig.me || curl -s https://api.ipify.org)
 
 if [[ -f /root/.vk-proxy-version ]]; then CURRENT_VERSION=$(cat /root/.vk-proxy-version); else CURRENT_VERSION="Неизвестно"; fi
-if [[ -f /root/.vk-proxy-repo ]]; then PROXY_REPO=$(cat /root/.vk-proxy-repo); else PROXY_REPO="cacggghp"; fi
+if [[ -f /root/.vk-proxy-port ]]; then PROXY_PORT=$(cat /root/.vk-proxy-port); else PROXY_PORT="56000"; fi
+
+# Получаем целевой порт (с защитой от старых версий скрипта)
+if [[ -f /root/.vk-proxy-target-port ]]; then 
+    TARGET_PORT=$(cat /root/.vk-proxy-target-port)
+else 
+    TARGET_PORT=$(grep -oP '(?:-connect |-p )127\.0\.0\.1:\K\d+' /etc/systemd/system/vk-proxy.service | head -1)
+    TARGET_PORT=${TARGET_PORT:-51820}
+    echo "$TARGET_PORT" > /root/.vk-proxy-target-port
+fi
+
+# Читаем и мигрируем репозиторий, если был сохранен старый формат (до v1.2)
+if [[ -f /root/.vk-proxy-repo ]]; then 
+    PROXY_REPO=$(cat /root/.vk-proxy-repo)
+    if [[ "$PROXY_REPO" != *"/"* ]]; then
+        if [[ "$PROXY_REPO" == "Urtyom-Alyanov" ]]; then
+            PROXY_REPO="Urtyom-Alyanov/turn-proxy"
+        else
+            PROXY_REPO="${PROXY_REPO}/vk-turn-proxy"
+        fi
+        echo "$PROXY_REPO" > /root/.vk-proxy-repo
+    fi
+else 
+    PROXY_REPO="cacggghp/vk-turn-proxy"
+fi
+
+get_download_url() {
+    local api_resp="$1"
+    local arch="$2"
+    local repo="$3"
+    local url=""
+    
+    if [[ "$repo" == *"Urtyom-Alyanov"* ]]; then
+        url=$(echo "$api_resp" | jq -r '.assets[] | select(.name == "turn-proxy-server") | .browser_download_url' | head -n 1)
+    else
+        url=$(echo "$api_resp" | jq -r '.assets[] | select(.name == "server-linux-'"${arch}"'") | .browser_download_url' | head -n 1)
+    fi
+    echo "$url"
+}
 
 while true; do
     clear
     echo "========================================="
-    echo -e "${CYAN}      VK TURN Proxy Manager v1.1${NC}     "
+    echo -e "${CYAN}      VK TURN Proxy Manager v1.2${NC}     "
     echo "========================================="
     if systemctl is-active --quiet vk-proxy; then echo -e "Статус прокси: ${GREEN}Активен (Работает)${NC}"; else echo -e "Статус прокси: ${RED}Остановлен${NC}"; fi
     echo -e "Текущая версия: ${YELLOW}${CURRENT_VERSION}${NC} [Реализация: ${CYAN}${PROXY_REPO}${NC}]"
-    echo "Данные для приложения (Peer): $PUBLIC_IP:56000"
+    echo "Данные для приложения (Peer): $PUBLIC_IP:$PROXY_PORT"
     echo "========================================="
     echo "1.  🟢 Запустить прокси"
     echo "2.  🔴 Остановить прокси"
     echo "3.  🔄 Перезапустить"
-    echo "4.  📥 Обновить прокси (Умное обновление)"
+    echo "4.  📥 Обновить ядро прокси"
     echo "5.  📊 Посмотреть логи"
     echo "6.  ➕ Управление WireGuard (Добавить/Удалить)"
-    echo "7.  📱 Показать QR-код существующего клиента"
-    echo "8.  ⚙️ Обновить саму панель vk-panel"
-    echo "9.  🗑️ Полностью удалить vk-turn-proxy"
-    echo "10. 🔀 Сменить реализацию (cacggghp <-> kiper292)"
+    echo "7.  📱 Показать QR-код существующего WG-клиента"
+    echo "8.  ⚙️  Обновить саму панель vk-panel"
+    echo "9.  🗑️  Полностью удалить vk-turn-proxy"
+    echo "10. 🔀 Сменить реализацию ядра"
     echo "0.  ❌ Выйти"
     echo "========================================="
     read -p "Выбери действие: " choice
 
-    API_URL="https://api.github.com/repos/${PROXY_REPO}/vk-turn-proxy/releases/latest"
+    API_URL="https://api.github.com/repos/${PROXY_REPO}/releases/latest"
 
     case $choice in
         1) systemctl start vk-proxy; echo -e "${GREEN}Запущено!${NC}"; sleep 1 ;;
@@ -60,7 +98,7 @@ while true; do
         3) systemctl restart vk-proxy; echo -e "${GREEN}Перезапущено!${NC}"; sleep 1 ;;
         4)
             echo "Проверка обновлений через GitHub API ($PROXY_REPO)..."
-            API_RESP=$(curl -s $API_URL)
+            API_RESP=$(curl -s "$API_URL")
             LATEST_TAG=$(echo "$API_RESP" | jq -r ".tag_name")
             
             if [[ "$LATEST_TAG" == "null" || -z "$LATEST_TAG" ]]; then
@@ -73,15 +111,23 @@ while true; do
                 echo -e "Доступна новая версия: ${YELLOW}$LATEST_TAG${NC} (текущая: $CURRENT_VERSION)"
                 read -p "Хотите обновить? [y/N]: " confirm
                 if [[ "$confirm" =~ ^[Yy]$ ]]; then
-                    DOWNLOAD_URL=$(echo "$API_RESP" | jq -r ".assets[] | select(.name == \"server-linux-${SYS_ARCH}\") | .browser_download_url")
-                    systemctl stop vk-proxy
-                    rm -f /root/server-linux-$SYS_ARCH
-                    wget -qO /root/server-linux-$SYS_ARCH "$DOWNLOAD_URL"
-                    chmod +x /root/server-linux-$SYS_ARCH
-                    echo "$LATEST_TAG" > /root/.vk-proxy-version
-                    systemctl start vk-proxy
-                    CURRENT_VERSION=$LATEST_TAG
-                    echo -e "${GREEN}Успешно обновлено до $LATEST_TAG!${NC}"
+                    DOWNLOAD_URL=$(get_download_url "$API_RESP" "$SYS_ARCH" "$PROXY_REPO")
+                    if [[ "$DOWNLOAD_URL" == "null" || -z "$DOWNLOAD_URL" ]]; then
+                        echo -e "${RED}Ошибка получения ссылки на скачивание. Отмена.${NC}"
+                    else
+                        echo "Скачивание обновления..."
+                        if wget -qO /tmp/server-linux-$SYS_ARCH "$DOWNLOAD_URL"; then
+                            systemctl stop vk-proxy
+                            mv /tmp/server-linux-$SYS_ARCH /root/server-linux-$SYS_ARCH
+                            chmod +x /root/server-linux-$SYS_ARCH
+                            echo "$LATEST_TAG" > /root/.vk-proxy-version
+                            systemctl start vk-proxy
+                            CURRENT_VERSION=$LATEST_TAG
+                            echo -e "${GREEN}Успешно обновлено до $LATEST_TAG!${NC}"
+                        else
+                            echo -e "${RED}Ошибка скачивания файла обновления.${NC}"
+                        fi
+                    fi
                 fi
             fi
             read -n 1 -s -r -p "Нажми любую клавишу..." ;;
@@ -90,13 +136,13 @@ while true; do
             if [ -f /root/wireguard-install.sh ]; then 
                 bash /root/wireguard-install.sh
             else 
-                echo -e "${RED}Установщик WG не найден.${NC}"
+                echo -e "${RED}Установщик WG не найден. Запустите установку через основной скрипт.${NC}"
             fi
             read -n 1 -s -r -p "Нажми любую клавишу..." 
             ;;
         7)
             echo ""
-            echo -e "${CYAN}Доступные конфигурации клиентов:${NC}"
+            echo -e "${CYAN}Доступные конфигурации WG-клиентов:${NC}"
             shopt -s nullglob
             CLIENT_CONFS=(/root/*.conf)
             shopt -u nullglob
@@ -125,12 +171,12 @@ while true; do
             echo -e "${GREEN}Панель обновлена! Перезапустите команду vk-panel.${NC}"
             exit 0 ;;
         9)
-            echo -e "${RED}ВНИМАНИЕ: Это удалит службу и бинарник прокси! WireGuard останется.${NC}"
+            echo -e "${RED}ВНИМАНИЕ: Это удалит службу и бинарник прокси! Остальные VPN (WG, Xray, Hysteria) останутся нетронутыми.${NC}"
             read -p "Вы АБСОЛЮТНО уверены? [y/N]: " confirm
             if [[ "$confirm" =~ ^[Yy]$ ]]; then
                 systemctl stop vk-proxy; systemctl disable vk-proxy; rm -f /etc/systemd/system/vk-proxy.service; systemctl daemon-reload
-                if command -v ufw &> /dev/null; then ufw delete allow 56000/tcp >/dev/null 2>&1; ufw delete allow 56000/udp >/dev/null 2>&1; fi
-                rm -f /root/server-linux-$SYS_ARCH /root/.vk-proxy-version /usr/local/bin/vk-panel /root/.vk-proxy-repo
+                if command -v ufw &> /dev/null; then ufw delete allow $PROXY_PORT/tcp >/dev/null 2>&1; ufw delete allow $PROXY_PORT/udp >/dev/null 2>&1; fi
+                rm -f /root/server-linux-$SYS_ARCH /root/.vk-proxy-version /usr/local/bin/vk-panel /root/.vk-proxy-repo /root/.vk-proxy-port /root/.vk-proxy-target-port
                 echo -e "${GREEN}Прокси успешно удален.${NC}"; exit 0
             fi ;;
         10)
@@ -140,34 +186,80 @@ while true; do
             echo -e "${YELLOW}перенастройка на стороне клиента или его смена.       ${NC}"
             echo -e "${YELLOW}======================================================${NC}"
             echo -e "Текущая реализация: ${CYAN}${PROXY_REPO}${NC}"
+            echo "Доступные реализации:"
+            echo "1) cacggghp/vk-turn-proxy (Оригинал)"
+            echo "2) kiper292/vk-turn-proxy (Форк)"
+            echo "3) Urtyom-Alyanov/turn-proxy (Ядро на Rust)"
+            echo "0) Отмена"
+            read -p "Выберите новую реализацию [1-3 или 0]: " repo_choice
             
-            if [[ "$PROXY_REPO" == "cacggghp" ]]; then
-                NEW_REPO="kiper292"
-            else
-                NEW_REPO="cacggghp"
+            case "$repo_choice" in
+                1) NEW_REPO="cacggghp/vk-turn-proxy" ;;
+                2) NEW_REPO="kiper292/vk-turn-proxy" ;;
+                3) NEW_REPO="Urtyom-Alyanov/turn-proxy" ;;
+                0) continue ;;
+                *) echo -e "${RED}Неверный выбор.${NC}"; sleep 1; continue ;;
+            esac
+            
+            if [[ "$NEW_REPO" == "$PROXY_REPO" ]]; then
+                echo -e "${YELLOW}Эта реализация уже установлена!${NC}"; sleep 1; continue
             fi
             
             read -p "Вы уверены, что хотите сменить на $NEW_REPO? [y/N]: " confirm_switch
             if [[ "$confirm_switch" =~ ^[Yy]$ ]]; then
                 echo "Получение данных с GitHub ($NEW_REPO)..."
-                NEW_API_URL="https://api.github.com/repos/${NEW_REPO}/vk-turn-proxy/releases/latest"
-                API_RESP=$(curl -s $NEW_API_URL)
+                NEW_API_URL="https://api.github.com/repos/${NEW_REPO}/releases/latest"
+                API_RESP=$(curl -s "$NEW_API_URL")
                 LATEST_TAG=$(echo "$API_RESP" | jq -r ".tag_name")
-                DOWNLOAD_URL=$(echo "$API_RESP" | jq -r ".assets[] | select(.name == \"server-linux-${SYS_ARCH}\") | .browser_download_url")
                 
-                if [[ "$DOWNLOAD_URL" == "null" || -z "$DOWNLOAD_URL" ]]; then
-                    echo -e "${RED}Ошибка получения релиза $NEW_REPO. Отмена.${NC}"
+                if [[ "$LATEST_TAG" == "null" || -z "$LATEST_TAG" ]]; then
+                    echo -e "${RED}Ошибка API GitHub (возможно исчерпан лимит или нет релизов). Отмена.${NC}"
                 else
-                    systemctl stop vk-proxy
-                    rm -f /root/server-linux-$SYS_ARCH
-                    wget -qO /root/server-linux-$SYS_ARCH "$DOWNLOAD_URL"
-                    chmod +x /root/server-linux-$SYS_ARCH
-                    echo "$NEW_REPO" > /root/.vk-proxy-repo
-                    echo "$LATEST_TAG" > /root/.vk-proxy-version
-                    systemctl start vk-proxy
-                    PROXY_REPO=$NEW_REPO
-                    CURRENT_VERSION=$LATEST_TAG
-                    echo -e "${GREEN}Успешно изменено на реализацию $NEW_REPO ($LATEST_TAG)!${NC}"
+                    DOWNLOAD_URL=$(get_download_url "$API_RESP" "$SYS_ARCH" "$NEW_REPO")
+                    if [[ "$DOWNLOAD_URL" == "null" || -z "$DOWNLOAD_URL" ]]; then
+                        echo -e "${RED}Ошибка получения релиза $NEW_REPO. Возможно бинарник не опубликован. Отмена.${NC}"
+                    else
+                        echo "Скачивание ядра..."
+                        if wget -qO /tmp/server-linux-$SYS_ARCH "$DOWNLOAD_URL"; then
+                            systemctl stop vk-proxy
+                            mv /tmp/server-linux-$SYS_ARCH /root/server-linux-$SYS_ARCH
+                            chmod +x /root/server-linux-$SYS_ARCH
+                            
+                            # Переписываем аргументы службы под новое ядро (ДОБАВЛЕН ФЛАГ -n 10000)
+                            if [[ "$NEW_REPO" == *"Urtyom-Alyanov"* ]]; then
+                                EXEC_ARGS="-N -l 0.0.0.0:$PROXY_PORT -p 127.0.0.1:$TARGET_PORT -n 10000"
+                            else
+                                EXEC_ARGS="-listen 0.0.0.0:$PROXY_PORT -connect 127.0.0.1:$TARGET_PORT"
+                            fi
+
+cat <<EOF_SVC > /etc/systemd/system/vk-proxy.service
+[Unit]
+Description=VK TURN Proxy Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root
+ExecStart=/root/server-linux-$SYS_ARCH $EXEC_ARGS
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF_SVC
+                            systemctl daemon-reload
+                            
+                            echo "$NEW_REPO" > /root/.vk-proxy-repo
+                            echo "$LATEST_TAG" > /root/.vk-proxy-version
+                            systemctl start vk-proxy
+                            PROXY_REPO=$NEW_REPO
+                            CURRENT_VERSION=$LATEST_TAG
+                            echo -e "${GREEN}Успешно изменено на реализацию $NEW_REPO ($LATEST_TAG)!${NC}"
+                        else
+                            echo -e "${RED}Ошибка скачивания ядра. Отмена.${NC}"
+                        fi
+                    fi
                 fi
             fi
             read -n 1 -s -r -p "Нажми любую клавишу..."
@@ -189,18 +281,18 @@ fi
 
 clear
 echo "==================================================="
-echo "   Ультимативный Установщик WG + vk-turn-proxy     "
+echo "   Ультимативный Установщик VPN + vk-turn-proxy    "
 echo "==================================================="
 echo ""
 
 # 1. Проверка зависимостей
-echo "[1/7] Установка зависимостей (curl, wget, jq, ufw)..."
+echo "[1/8] Установка зависимостей (curl, wget, jq, ufw, qrencode)..."
 if command -v apt-get &> /dev/null; then
     apt-get update -y > /dev/null 2>&1
-    apt-get install -y curl wget jq ufw > /dev/null 2>&1
+    apt-get install -y curl wget jq ufw qrencode > /dev/null 2>&1
 elif command -v yum &> /dev/null; then
     yum install -y curl wget jq epel-release > /dev/null 2>&1
-    yum install -y ufw > /dev/null 2>&1
+    yum install -y ufw qrencode > /dev/null 2>&1
 fi
 
 # 2. Архитектура
@@ -209,102 +301,160 @@ if [[ "$ARCH" == "x86_64" ]]; then SYS_ARCH="amd64"; else SYS_ARCH="arm64"; fi
 
 # 3. Выбор реализации
 echo ""
-echo "[2/7] Выбор реализации vk-turn-proxy..."
-echo "1) cacggghp (по умолчанию)"
-echo "2) kiper292 (альтернатива/форк)"
-read -p "Твой выбор [1/2]: " repo_choice
+echo "[2/8] Выбор реализации vk-turn-proxy..."
+echo "1) cacggghp/vk-turn-proxy (Оригинал, по умолчанию)"
+echo "2) kiper292/vk-turn-proxy (Альтернатива/форк)"
+echo "3) Urtyom-Alyanov/turn-proxy (Ядро на Rust)"
+read -p "Твой выбор [1-3]: " repo_choice
 
-if [[ "$repo_choice" == "2" ]]; then
-    PROXY_REPO="kiper292"
-else
-    PROXY_REPO="cacggghp"
-fi
+case "$repo_choice" in
+  2) PROXY_REPO="kiper292/vk-turn-proxy" ;;
+  3) PROXY_REPO="Urtyom-Alyanov/turn-proxy" ;;
+  *) PROXY_REPO="cacggghp/vk-turn-proxy" ;;
+esac
+
 echo "$PROXY_REPO" > /root/.vk-proxy-repo
-API_URL="https://api.github.com/repos/${PROXY_REPO}/vk-turn-proxy/releases/latest"
+API_URL="https://api.github.com/repos/${PROXY_REPO}/releases/latest"
 
-# 4. WireGuard: Проверка и установка
+# 4. Выбор порта прокси
 echo ""
-echo "[3/7] Настройка WireGuard..."
-shopt -s nullglob
-WG_CONFS=(/etc/wireguard/*.conf)
-shopt -u nullglob
+echo "[3/8] Настройка внешнего порта прокси (к нему будут подключаться клиенты через VK)..."
+DEFAULT_PROXY_PORT=56000
+if [[ "$PROXY_REPO" == "Urtyom-Alyanov/turn-proxy" ]]; then
+    DEFAULT_PROXY_PORT=56040
+fi
+read -p "Введи внешний порт прокси (нажми Enter для $DEFAULT_PROXY_PORT): " INPUT_PROXY_PORT
 
-if [ ${#WG_CONFS[@]} -gt 0 ]; then
-    echo "Найдены существующие конфигурации WireGuard."
-    read -p "Хочешь запустить установщик WireGuard? (выбери N, если WG уже настроен) [y/N]: " run_wg
-    if [[ "$run_wg" =~ ^[Yy]$ ]]; then
-        curl -O https://raw.githubusercontent.com/angristan/wireguard-install/master/wireguard-install.sh
-        chmod +x wireguard-install.sh
-        ./wireguard-install.sh
-        shopt -s nullglob
-        WG_CONFS=(/etc/wireguard/*.conf)
-        shopt -u nullglob
+if [[ "$INPUT_PROXY_PORT" =~ ^[0-9]+$ ]]; then
+    PROXY_PORT="$INPUT_PROXY_PORT"
+else
+    PROXY_PORT="$DEFAULT_PROXY_PORT"
+fi
+echo "$PROXY_PORT" > /root/.vk-proxy-port
+echo "Выбран внешний порт: $PROXY_PORT"
+
+# 5. Выбор типа установки и настройка целевого локального порта
+echo ""
+echo "[4/8] Настройка локального порта (цель для прокси)..."
+echo "Куда прокси должен перенаправлять трафик?"
+echo "1) Установить WireGuard с нуля (автоматически установит и привяжет порт)"
+echo "2) Ввести порт вручную (если WireGuard, Hysteria2, Xray или 3X-UI уже установлены)"
+read -p "Твой выбор [1/2]: " port_setup_choice
+
+TARGET_PORT=""
+
+if [[ "$port_setup_choice" == "2" ]]; then
+    echo ""
+    read -p "Введи локальный порт (например, 51820 для WG, 443 для Hysteria2/Xray/VLESS): " manual_port
+    if [[ "$manual_port" =~ ^[0-9]+$ ]]; then
+        TARGET_PORT="$manual_port"
+        echo "Выбран ручной порт: $TARGET_PORT"
     else
-        echo "Пропускаем установку WireGuard..."
+        echo "Ошибка: введено не число. Используем стандартный порт WG: 51820"
+        TARGET_PORT=51820
     fi
 else
-    curl -O https://raw.githubusercontent.com/angristan/wireguard-install/master/wireguard-install.sh
-    chmod +x wireguard-install.sh
-    ./wireguard-install.sh
+    # 6. WireGuard: Проверка и установка
+    echo ""
+    echo "[5/8] Установка и поиск порта WireGuard..."
     shopt -s nullglob
     WG_CONFS=(/etc/wireguard/*.conf)
     shopt -u nullglob
-fi
 
-# 5. Умный поиск порта
-echo ""
-echo "[4/7] Определение порта WireGuard..."
-WG_PORT=""
-if [ ${#WG_CONFS[@]} -eq 1 ]; then
-    WG_PORT=$(grep "ListenPort" "${WG_CONFS[0]}" | awk '{print $3}')
-    echo "Автоматически выбран конфиг: ${WG_CONFS[0]}"
-elif [ ${#WG_CONFS[@]} -gt 1 ]; then
-    echo "Найдено несколько конфигураций:"
-    for i in "${!WG_CONFS[@]}"; do echo "$((i+1)). ${WG_CONFS[$i]}"; done
-    read -p "Выбери номер конфига для привязки прокси: " conf_choice
-    conf_choice=${conf_choice:-1}
-    if [[ "$conf_choice" -ge 1 && "$conf_choice" -le ${#WG_CONFS[@]} ]]; then
-        WG_PORT=$(grep "ListenPort" "${WG_CONFS[$((conf_choice-1))]}" | awk '{print $3}')
+    if [ ${#WG_CONFS[@]} -gt 0 ]; then
+        echo "Найдены существующие конфигурации WireGuard."
+        read -p "Хочешь запустить установщик WireGuard? (выбери N, если WG уже настроен) [y/N]: " run_wg
+        if [[ "$run_wg" =~ ^[Yy]$ ]]; then
+            curl -sLo /root/wireguard-install.sh https://raw.githubusercontent.com/angristan/wireguard-install/master/wireguard-install.sh
+            chmod +x /root/wireguard-install.sh
+            bash /root/wireguard-install.sh
+            shopt -s nullglob
+            WG_CONFS=(/etc/wireguard/*.conf)
+            shopt -u nullglob
+        else
+            echo "Пропускаем установку WireGuard..."
+        fi
+    else
+        curl -sLo /root/wireguard-install.sh https://raw.githubusercontent.com/angristan/wireguard-install/master/wireguard-install.sh
+        chmod +x /root/wireguard-install.sh
+        bash /root/wireguard-install.sh
+        shopt -s nullglob
+        WG_CONFS=(/etc/wireguard/*.conf)
+        shopt -u nullglob
+    fi
+
+    # Умный поиск порта из файлов WG
+    if [ ${#WG_CONFS[@]} -eq 1 ]; then
+        TARGET_PORT=$(grep -oP 'ListenPort\s*=\s*\K\d+' "${WG_CONFS[0]}")
+        echo "Автоматически выбран конфиг: ${WG_CONFS[0]}"
+    elif [ ${#WG_CONFS[@]} -gt 1 ]; then
+        echo "Найдено несколько конфигураций:"
+        for i in "${!WG_CONFS[@]}"; do echo "$((i+1)). ${WG_CONFS[$i]}"; done
+        read -p "Выбери номер конфига для привязки прокси: " conf_choice
+        conf_choice=${conf_choice:-1}
+        if [[ "$conf_choice" -ge 1 && "$conf_choice" -le ${#WG_CONFS[@]} ]]; then
+            TARGET_PORT=$(grep -oP 'ListenPort\s*=\s*\K\d+' "${WG_CONFS[$((conf_choice-1))]}")
+        fi
+    fi
+
+    if [[ -z "$TARGET_PORT" ]]; then
+        read -p "Не удалось найти порт. Введи целевой порт вручную: " TARGET_PORT
+    else
+        echo "Порт определен: $TARGET_PORT"
     fi
 fi
 
-if [[ -z "$WG_PORT" ]]; then
-    read -p "Не удалось найти порт. Введи порт WireGuard вручную: " WG_PORT
+# Сохраняем целевой порт для перегенерации службы в будущем
+echo "$TARGET_PORT" > /root/.vk-proxy-target-port
+
+# 7. Скачивание ядра
+echo ""
+echo "[6/8] Загрузка ядра ($SYS_ARCH) из репозитория $PROXY_REPO..."
+API_RESP=$(curl -s "$API_URL")
+LATEST_TAG=$(echo "$API_RESP" | jq -r ".tag_name")
+DOWNLOAD_URL=""
+
+if [[ "$PROXY_REPO" == *"Urtyom-Alyanov"* ]]; then
+    # Для Rust-ядра берем конкретный файл
+    DOWNLOAD_URL=$(echo "$API_RESP" | jq -r '.assets[] | select(.name == "turn-proxy-server") | .browser_download_url' | head -n 1)
 else
-    echo "Порт определен: $WG_PORT"
+    # Для остальных ищем стандартное имя
+    DOWNLOAD_URL=$(echo "$API_RESP" | jq -r '.assets[] | select(.name == "server-linux-'"${SYS_ARCH}"'") | .browser_download_url' | head -n 1)
 fi
 
-# 6. Скачивание vk-turn-proxy
-echo ""
-echo "[5/7] Загрузка vk-turn-proxy ($SYS_ARCH) от $PROXY_REPO..."
-API_RESP=$(curl -s $API_URL)
-DOWNLOAD_URL=$(echo "$API_RESP" | jq -r ".assets[] | select(.name == \"server-linux-${SYS_ARCH}\") | .browser_download_url")
-LATEST_TAG=$(echo "$API_RESP" | jq -r ".tag_name")
-
 if [[ "$DOWNLOAD_URL" == "null" || -z "$DOWNLOAD_URL" ]]; then
-    echo "Ошибка получения ссылки. Лимит API GitHub или файл не найден."
+    echo "Ошибка получения ссылки на бинарник. Лимит API GitHub, или нет готовых сборок под $SYS_ARCH в репозитории $PROXY_REPO."
+    echo "Для справки: ядро на Rust в данный момент публикует только amd64 бинарники."
     exit 1
 fi
 
+# Сохраняем всегда под одним стандартным именем, чтобы не менять systemd
 wget -qO /root/server-linux-$SYS_ARCH "$DOWNLOAD_URL"
 chmod +x /root/server-linux-$SYS_ARCH
 echo "$LATEST_TAG" > /root/.vk-proxy-version
 
-# 7. Служба и Фаервол
+# 8. Служба и Фаервол
 echo ""
-echo "[6/7] Настройка службы и фаервола..."
-pkill -f server-linux-$SYS_ARCH || true
+echo "[7/8] Настройка службы и фаервола..."
+systemctl stop vk-proxy 2>/dev/null || true
+
+# Генерируем правильные аргументы в зависимости от ядра (ДОБАВЛЕН ФЛАГ -n 10000)
+if [[ "$PROXY_REPO" == *"Urtyom-Alyanov"* ]]; then
+    EXEC_ARGS="-N -l 0.0.0.0:$PROXY_PORT -p 127.0.0.1:$TARGET_PORT -n 10000"
+else
+    EXEC_ARGS="-listen 0.0.0.0:$PROXY_PORT -connect 127.0.0.1:$TARGET_PORT"
+fi
 
 cat <<EOF > /etc/systemd/system/vk-proxy.service
 [Unit]
-Description=VK TURN Proxy for WireGuard
+Description=VK TURN Proxy Service
 After=network.target
 
 [Service]
 Type=simple
 User=root
 WorkingDirectory=/root
-ExecStart=/root/server-linux-$SYS_ARCH -listen 0.0.0.0:56000 -connect 127.0.0.1:$WG_PORT
+ExecStart=/root/server-linux-$SYS_ARCH $EXEC_ARGS
 Restart=always
 RestartSec=3
 
@@ -317,23 +467,24 @@ systemctl enable vk-proxy > /dev/null 2>&1
 systemctl start vk-proxy
 
 if command -v ufw &> /dev/null && ufw status | grep -qiw "active"; then
-    echo "Открываем порт 56000 в UFW..."
-    ufw allow 56000/tcp > /dev/null 2>&1
-    ufw allow 56000/udp > /dev/null 2>&1
+    echo "Открываем порт $PROXY_PORT в UFW..."
+    ufw allow $PROXY_PORT/tcp > /dev/null 2>&1
+    ufw allow $PROXY_PORT/udp > /dev/null 2>&1
 fi
 
-# 8. Панель
+# 9. Панель
 echo ""
-echo "[7/7] Создание консольной панели (vk-panel)..."
+echo "[8/8] Создание консольной панели (vk-panel)..."
 create_panel
 
 echo ""
 echo "==================================================="
 echo "✅ Установка полностью завершена!"
-echo "Твой порт WG: $WG_PORT был успешно привязан."
+echo "Трафик прокси направляется на локальный порт: $TARGET_PORT"
+echo "Внешний порт прокси для подключения: $PROXY_PORT"
 echo "==================================================="
 echo "⚠️  ВАЖНО ДЛЯ ОБЛАКОВ (Oracle, AWS, Yandex и др.):"
-echo "Обязательно открой порт 56000 (TCP/UDP) в панели"
+echo "Обязательно открой порт $PROXY_PORT (TCP/UDP) в панели"
 echo "управления сервером на сайте твоего хостинг-провайдера!"
 echo "==================================================="
 echo "🔥 Для вызова панели управления просто напиши:"
