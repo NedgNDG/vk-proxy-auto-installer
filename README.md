@@ -40,8 +40,8 @@ bash <(curl -sL https://raw.githubusercontent.com/NedgNDG/vk-proxy-auto-installe
 ## 📱 Как подключиться и настроить клиент на телефоне
 
 На выбор имеются несколько вариантов подключения:
-1. Через модифицированный клиент WireGuard [WG Turn от kiper292](https://github.com/kiper292/wireguard-turn-android) (особенно рекомендуется использовать с ядром от самого [kiper292](https://github.com/kiper292/vk-turn-proxy))
-2. Через приложение NekoBox [(рекомендую мод от Starifly)](https://github.com/starifly/NekoBoxForAndroid) (или другой клиент с xray или sing-box ядром) и утилитой [vk-turn-proxy-android от MYSOREZ](https://github.com/MYSOREZ/vk-turn-proxy-android) (особенно если собираетесь использовать с vless)
+1. Через модифицированный клиент WireGuard [WG Turn от kiper292](https://github.com/kiper292/wireguard-turn-android) (особенно рекомендуется использовать с ядром на сервере от самого [kiper292](https://github.com/kiper292/vk-turn-proxy))
+2. Через приложение NekoBox ([рекомендую мод от Starifly](https://github.com/starifly/NekoBoxForAndroid)) (или другой клиент с xray или sing-box ядром) и утилитой [vk-turn-proxy-android от MYSOREZ](https://github.com/MYSOREZ/vk-turn-proxy-android) (особенно если собираетесь использовать с vless)
 
 Также существует [клиент от WINGS-N](https://github.com/WINGS-N/WINGSV), подробнее на репозитории автора
 
