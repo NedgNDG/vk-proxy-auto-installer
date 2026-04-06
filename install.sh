@@ -38,7 +38,7 @@ else
     echo "$TARGET_PORT" > /root/.vk-proxy-target-port
 fi
 
-# Читаем и мигрируем репозиторий, если был сохранен старый формат (до v1.2)
+# Читаем и мигрируем репозиторий
 if [[ -f /root/.vk-proxy-repo ]]; then 
     PROXY_REPO=$(cat /root/.vk-proxy-repo)
     if [[ "$PROXY_REPO" != *"/"* ]]; then
@@ -70,7 +70,7 @@ get_download_url() {
 while true; do
     clear
     echo "========================================="
-    echo -e "${CYAN}      VK TURN Proxy Manager v1.2${NC}     "
+    echo -e "${CYAN}      VK TURN Proxy Manager v1.3${NC}     "
     echo "========================================="
     if systemctl is-active --quiet vk-proxy; then echo -e "Статус прокси: ${GREEN}Активен (Работает)${NC}"; else echo -e "Статус прокси: ${RED}Остановлен${NC}"; fi
     echo -e "Текущая версия: ${YELLOW}${CURRENT_VERSION}${NC} [Реализация: ${CYAN}${PROXY_REPO}${NC}]"
@@ -95,7 +95,7 @@ while true; do
     case $choice in
         1) systemctl start vk-proxy; echo -e "${GREEN}Запущено!${NC}"; sleep 1 ;;
         2) systemctl stop vk-proxy; echo -e "${RED}Остановлено!${NC}"; sleep 1 ;;
-        3) systemctl restart vk-proxy; echo -e "${GREEN}Перезапущено!${NC}"; sleep 1 ;;
+        3) if systemctl restart vk-proxy; then echo -e "${GREEN}Успешно перезапущено!${NC}"; else echo -e "${RED}Ошибка перезапуска! Проверьте логи (Пункт 5).${NC}"; fi; sleep 2 ;;
         4)
             echo "Проверка обновлений через GitHub API ($PROXY_REPO)..."
             API_RESP=$(curl -s "$API_URL")
@@ -188,15 +188,17 @@ while true; do
             echo -e "Текущая реализация: ${CYAN}${PROXY_REPO}${NC}"
             echo "Доступные реализации:"
             echo "1) cacggghp/vk-turn-proxy (Оригинал)"
-            echo "2) kiper292/vk-turn-proxy (Форк)"
-            echo "3) Urtyom-Alyanov/turn-proxy (Ядро на Rust)"
+            echo "2) kiper292/vk-turn-proxy (Поддержка WB Stream)"
+            echo "3) Urtyom-Alyanov/turn-proxy (Ядро на Rust, только amd64/x86_64)"
+            echo "4) Moroka8/vk-turn-proxy (Поддержка VLESS, флаг -vless)"
             echo "0) Отмена"
-            read -p "Выберите новую реализацию [1-3 или 0]: " repo_choice
+            read -p "Выберите новую реализацию [1-4 или 0]: " repo_choice
             
             case "$repo_choice" in
                 1) NEW_REPO="cacggghp/vk-turn-proxy" ;;
                 2) NEW_REPO="kiper292/vk-turn-proxy" ;;
                 3) NEW_REPO="Urtyom-Alyanov/turn-proxy" ;;
+                4) NEW_REPO="Moroka8/vk-turn-proxy" ;;
                 0) continue ;;
                 *) echo -e "${RED}Неверный выбор.${NC}"; sleep 1; continue ;;
             esac
@@ -225,9 +227,11 @@ while true; do
                             mv /tmp/server-linux-$SYS_ARCH /root/server-linux-$SYS_ARCH
                             chmod +x /root/server-linux-$SYS_ARCH
                             
-                            # Переписываем аргументы службы под новое ядро (ДОБАВЛЕН ФЛАГ -n 10000)
+                            # Переписываем аргументы службы под новое ядро
                             if [[ "$NEW_REPO" == *"Urtyom-Alyanov"* ]]; then
                                 EXEC_ARGS="-N -l 0.0.0.0:$PROXY_PORT -p 127.0.0.1:$TARGET_PORT -n 10000"
+                            elif [[ "$NEW_REPO" == *"Moroka8"* ]]; then
+                                EXEC_ARGS="-listen 0.0.0.0:$PROXY_PORT -connect 127.0.0.1:$TARGET_PORT -vless"
                             else
                                 EXEC_ARGS="-listen 0.0.0.0:$PROXY_PORT -connect 127.0.0.1:$TARGET_PORT"
                             fi
@@ -241,6 +245,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/root
+LimitNOFILE=1048576
 ExecStart=/root/server-linux-$SYS_ARCH $EXEC_ARGS
 Restart=always
 RestartSec=3
@@ -303,13 +308,15 @@ if [[ "$ARCH" == "x86_64" ]]; then SYS_ARCH="amd64"; else SYS_ARCH="arm64"; fi
 echo ""
 echo "[2/8] Выбор реализации vk-turn-proxy..."
 echo "1) cacggghp/vk-turn-proxy (Оригинал, по умолчанию)"
-echo "2) kiper292/vk-turn-proxy (Альтернатива/форк)"
-echo "3) Urtyom-Alyanov/turn-proxy (Ядро на Rust)"
-read -p "Твой выбор [1-3]: " repo_choice
+echo "2) kiper292/vk-turn-proxy (Поддержка WB Stream)"
+echo "3) Urtyom-Alyanov/turn-proxy (Ядро на Rust, только amd64/x86_64)"
+echo "4) Moroka8/vk-turn-proxy (Поддержка VLESS, флаг -vless)"
+read -p "Твой выбор [1-4]: " repo_choice
 
 case "$repo_choice" in
   2) PROXY_REPO="kiper292/vk-turn-proxy" ;;
   3) PROXY_REPO="Urtyom-Alyanov/turn-proxy" ;;
+  4) PROXY_REPO="Moroka8/vk-turn-proxy" ;;
   *) PROXY_REPO="cacggghp/vk-turn-proxy" ;;
 esac
 
@@ -323,13 +330,25 @@ DEFAULT_PROXY_PORT=56000
 if [[ "$PROXY_REPO" == "Urtyom-Alyanov/turn-proxy" ]]; then
     DEFAULT_PROXY_PORT=56040
 fi
-read -p "Введи внешний порт прокси (нажми Enter для $DEFAULT_PROXY_PORT): " INPUT_PROXY_PORT
 
-if [[ "$INPUT_PROXY_PORT" =~ ^[0-9]+$ ]]; then
-    PROXY_PORT="$INPUT_PROXY_PORT"
-else
-    PROXY_PORT="$DEFAULT_PROXY_PORT"
-fi
+while true; do
+    read -p "Введи внешний порт прокси (нажми Enter для $DEFAULT_PROXY_PORT): " INPUT_PROXY_PORT
+    if [[ -z "$INPUT_PROXY_PORT" ]]; then
+        INPUT_PROXY_PORT="$DEFAULT_PROXY_PORT"
+    fi
+
+    if [[ "$INPUT_PROXY_PORT" =~ ^[0-9]+$ ]] && [ "$INPUT_PROXY_PORT" -ge 1 ] && [ "$INPUT_PROXY_PORT" -le 65535 ]; then
+        if command -v ss &> /dev/null && ss -tuln | grep -qE ":$INPUT_PROXY_PORT\b"; then
+            echo "⚠️ Ошибка: Порт $INPUT_PROXY_PORT уже занят другим приложением. Выбери другой."
+        else
+            PROXY_PORT="$INPUT_PROXY_PORT"
+            break
+        fi
+    else
+        echo "⚠️ Ошибка: Введи корректный порт от 1 до 65535."
+    fi
+done
+
 echo "$PROXY_PORT" > /root/.vk-proxy-port
 echo "Выбран внешний порт: $PROXY_PORT"
 
@@ -346,11 +365,11 @@ TARGET_PORT=""
 if [[ "$port_setup_choice" == "2" ]]; then
     echo ""
     read -p "Введи локальный порт (например, 51820 для WG, 443 для Hysteria2/Xray/VLESS): " manual_port
-    if [[ "$manual_port" =~ ^[0-9]+$ ]]; then
+    if [[ "$manual_port" =~ ^[0-9]+$ ]] && [ "$manual_port" -ge 1 ] && [ "$manual_port" -le 65535 ]; then
         TARGET_PORT="$manual_port"
         echo "Выбран ручной порт: $TARGET_PORT"
     else
-        echo "Ошибка: введено не число. Используем стандартный порт WG: 51820"
+        echo "Ошибка: введено некорректное значение порта. Используем стандартный порт WG: 51820"
         TARGET_PORT=51820
     fi
 else
@@ -365,9 +384,12 @@ else
         echo "Найдены существующие конфигурации WireGuard."
         read -p "Хочешь запустить установщик WireGuard? (выбери N, если WG уже настроен) [y/N]: " run_wg
         if [[ "$run_wg" =~ ^[Yy]$ ]]; then
-            curl -sLo /root/wireguard-install.sh https://raw.githubusercontent.com/angristan/wireguard-install/master/wireguard-install.sh
-            chmod +x /root/wireguard-install.sh
-            bash /root/wireguard-install.sh
+            if curl -sLo /root/wireguard-install.sh https://raw.githubusercontent.com/angristan/wireguard-install/master/wireguard-install.sh; then
+                chmod +x /root/wireguard-install.sh
+                bash /root/wireguard-install.sh
+            else
+                echo "❌ Ошибка скачивания установщика WireGuard."
+            fi
             shopt -s nullglob
             WG_CONFS=(/etc/wireguard/*.conf)
             shopt -u nullglob
@@ -375,9 +397,12 @@ else
             echo "Пропускаем установку WireGuard..."
         fi
     else
-        curl -sLo /root/wireguard-install.sh https://raw.githubusercontent.com/angristan/wireguard-install/master/wireguard-install.sh
-        chmod +x /root/wireguard-install.sh
-        bash /root/wireguard-install.sh
+        if curl -sLo /root/wireguard-install.sh https://raw.githubusercontent.com/angristan/wireguard-install/master/wireguard-install.sh; then
+            chmod +x /root/wireguard-install.sh
+            bash /root/wireguard-install.sh
+        else
+            echo "❌ Ошибка скачивания установщика WireGuard."
+        fi
         shopt -s nullglob
         WG_CONFS=(/etc/wireguard/*.conf)
         shopt -u nullglob
@@ -429,7 +454,10 @@ if [[ "$DOWNLOAD_URL" == "null" || -z "$DOWNLOAD_URL" ]]; then
 fi
 
 # Сохраняем всегда под одним стандартным именем, чтобы не менять systemd
-wget -qO /root/server-linux-$SYS_ARCH "$DOWNLOAD_URL"
+if ! wget -qO /root/server-linux-$SYS_ARCH "$DOWNLOAD_URL"; then
+    echo "❌ Ошибка: Не удалось скачать ядро прокси. Проверьте интернет или лимиты GitHub API."
+    exit 1
+fi
 chmod +x /root/server-linux-$SYS_ARCH
 echo "$LATEST_TAG" > /root/.vk-proxy-version
 
@@ -438,9 +466,11 @@ echo ""
 echo "[7/8] Настройка службы и фаервола..."
 systemctl stop vk-proxy 2>/dev/null || true
 
-# Генерируем правильные аргументы в зависимости от ядра (ДОБАВЛЕН ФЛАГ -n 10000)
+# Генерируем правильные аргументы в зависимости от ядра
 if [[ "$PROXY_REPO" == *"Urtyom-Alyanov"* ]]; then
     EXEC_ARGS="-N -l 0.0.0.0:$PROXY_PORT -p 127.0.0.1:$TARGET_PORT -n 10000"
+elif [[ "$PROXY_REPO" == *"Moroka8"* ]]; then
+    EXEC_ARGS="-listen 0.0.0.0:$PROXY_PORT -connect 127.0.0.1:$TARGET_PORT -vless"
 else
     EXEC_ARGS="-listen 0.0.0.0:$PROXY_PORT -connect 127.0.0.1:$TARGET_PORT"
 fi
@@ -454,6 +484,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/root
+LimitNOFILE=1048576
 ExecStart=/root/server-linux-$SYS_ARCH $EXEC_ARGS
 Restart=always
 RestartSec=3
@@ -466,7 +497,7 @@ systemctl daemon-reload
 systemctl enable vk-proxy > /dev/null 2>&1
 systemctl start vk-proxy
 
-if command -v ufw &> /dev/null && ufw status | grep -qiw "active"; then
+if command -v ufw &> /dev/null; then
     echo "Открываем порт $PROXY_PORT в UFW..."
     ufw allow $PROXY_PORT/tcp > /dev/null 2>&1
     ufw allow $PROXY_PORT/udp > /dev/null 2>&1
