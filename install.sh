@@ -29,7 +29,7 @@ PUBLIC_IP=$(curl -4 -s --connect-timeout 5 ifconfig.me || curl -s --connect-time
 if [[ -f /root/.vk-proxy-version ]]; then CURRENT_VERSION=$(cat /root/.vk-proxy-version); else CURRENT_VERSION="Неизвестно"; fi
 if [[ -f /root/.vk-proxy-port ]]; then PROXY_PORT=$(cat /root/.vk-proxy-port); else PROXY_PORT="56000"; fi
 
-# Получаем целевой порт (с защитой от старых версий скрипта)
+# Получаем целевой порт
 if [[ -f /root/.vk-proxy-target-port ]]; then 
     TARGET_PORT=$(cat /root/.vk-proxy-target-port)
 else 
@@ -58,6 +58,13 @@ else
     PROXY_REPO="cacggghp/vk-turn-proxy"
 fi
 
+# Автоматическая миграция со старого флага -telemost-dc на новый -dc
+if [[ -f /root/.vk-proxy-yandex-dc ]]; then
+    mv /root/.vk-proxy-yandex-dc /root/.vk-proxy-dc-mode
+    # Если мигрируем, нужно перезаписать аргументы службы
+    MIGRATION_NEEDED=1
+fi
+
 get_download_url() {
     local api_resp="$1"
     local arch="$2"
@@ -78,25 +85,54 @@ get_exec_args() {
         FINAL_ARGS=$(cat /root/.vk-proxy-custom-args)
     else
         local VLESS_FLAG=""
-        local YANDEX_FLAG=""
+        local DC_FLAG=""
         
         if [[ -f /root/.vk-proxy-vless ]] && [[ "$(cat /root/.vk-proxy-vless)" == "1" ]]; then 
             VLESS_FLAG=" -vless"
         fi
         
-        if [[ -f /root/.vk-proxy-yandex-dc ]] && [[ "$(cat /root/.vk-proxy-yandex-dc)" == "1" ]] && [[ -f /root/.vk-proxy-yandex-link ]]; then
-            local LINK=$(cat /root/.vk-proxy-yandex-link)
-            YANDEX_FLAG=" -yandex-link $LINK -telemost-dc"
+        if [[ -f /root/.vk-proxy-dc-mode ]] && [[ "$(cat /root/.vk-proxy-dc-mode)" == "1" ]]; then
+            if [[ -f /root/.vk-proxy-jazz-room ]]; then
+                local JAZZ_ROOM=$(cat /root/.vk-proxy-jazz-room)
+                DC_FLAG=" -jazz-room $JAZZ_ROOM -dc"
+            elif [[ -f /root/.vk-proxy-yandex-link ]]; then
+                local LINK=$(cat /root/.vk-proxy-yandex-link)
+                DC_FLAG=" -yandex-link $LINK -dc"
+            fi
         fi
 
         if [[ "$PROXY_REPO" == *"Urtyom-Alyanov"* ]]; then
-            FINAL_ARGS="-N -l 0.0.0.0:$PROXY_PORT -p 127.0.0.1:$TARGET_PORT -n 10000$YANDEX_FLAG$VLESS_FLAG"
+            FINAL_ARGS="-N -l 0.0.0.0:$PROXY_PORT -p 127.0.0.1:$TARGET_PORT -n 10000$DC_FLAG$VLESS_FLAG"
         else
-            FINAL_ARGS="-listen 0.0.0.0:$PROXY_PORT -connect 127.0.0.1:$TARGET_PORT$YANDEX_FLAG$VLESS_FLAG"
+            FINAL_ARGS="-listen 0.0.0.0:$PROXY_PORT -connect 127.0.0.1:$TARGET_PORT$DC_FLAG$VLESS_FLAG"
         fi
     fi
     echo "$FINAL_ARGS"
 }
+
+# Применяем миграцию, если это необходимо
+if [[ "$MIGRATION_NEEDED" == "1" ]]; then
+    EXEC_ARGS=$(get_exec_args)
+cat <<EOF_SVC > /etc/systemd/system/vk-proxy.service
+[Unit]
+Description=VK TURN Proxy Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root
+LimitNOFILE=1048576
+ExecStart=/root/server-linux-$SYS_ARCH $EXEC_ARGS
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF_SVC
+    systemctl daemon-reload
+    if systemctl is-active --quiet vk-proxy; then systemctl restart vk-proxy; fi
+fi
 
 while true; do
     clear
@@ -115,11 +151,11 @@ while true; do
         VLESS_TEXT="${RED}Выключен${NC}"
     fi
 
-    # Статус режима Yandex DC
-    if [[ -f /root/.vk-proxy-yandex-dc ]] && [[ "$(cat /root/.vk-proxy-yandex-dc)" == "1" ]]; then
-        YANDEX_TEXT="${GREEN}Включен${NC}"
+    # Статус режима DataChannel (Telemost / Jazz)
+    if [[ -f /root/.vk-proxy-dc-mode ]] && [[ "$(cat /root/.vk-proxy-dc-mode)" == "1" ]]; then
+        DC_TEXT="${GREEN}Включен${NC}"
     else
-        YANDEX_TEXT="${RED}Выключен${NC}"
+        DC_TEXT="${RED}Выключен${NC}"
     fi
 
     # Статус режима (Авто/Кастом)
@@ -130,11 +166,11 @@ while true; do
     fi
 
     echo "========================================================="
-    echo -e "${CYAN}               VK TURN Proxy Manager v1.6              ${NC}"
+    echo -e "${CYAN}               VK TURN Proxy Manager v1.7              ${NC}"
     echo "========================================================="
     echo -e "Статус:  ${PROXY_STATE}          | VLESS: ${VLESS_TEXT}"
     echo -e "Версия:  ${YELLOW}${CURRENT_VERSION}${NC}           | Ядро:  ${CYAN}${PROXY_REPO}${NC}"
-    echo -e "Режим:   ${MODE_TEXT} | telemost-dc: ${YANDEX_TEXT}"
+    echo -e "Режим:   ${MODE_TEXT} | DataChannel: ${DC_TEXT}"
     echo -e "Внешний: ${PUBLIC_IP}:${PROXY_PORT} | Назначение: 127.0.0.1:${TARGET_PORT}"
     echo "========================================================="
     echo -e "${YELLOW}--- Управление Proxy ---${NC}"
@@ -148,7 +184,7 @@ while true; do
     echo -e "${YELLOW}--- Настройки ---${NC}"
     echo "  7. 🔌 Изменить порты (Внешний / Локальный)"
     echo "  8. 🛡️ Включить/Выключить флаг '-vless'"
-    echo "  9. 📞 Включить/Выключить режим 'Yandex Telemost DC'"
+    echo "  9. 📞 Включить/Выключить режим 'DataChannel (SaluteJazz / Yandex)'"
     echo " 10. ✍️ Задать кастомные аргументы запуска (Raw command)"
     echo ""
     echo -e "${YELLOW}--- VPN и Клиенты ---${NC}"
@@ -192,6 +228,28 @@ while true; do
                             systemctl stop vk-proxy
                             mv /tmp/server-linux-$SYS_ARCH /root/server-linux-$SYS_ARCH
                             chmod +x /root/server-linux-$SYS_ARCH
+                            
+                            # Пересобираем аргументы на случай, если при обновлении изменились стандарты
+                            EXEC_ARGS=$(get_exec_args)
+cat <<EOF_SVC > /etc/systemd/system/vk-proxy.service
+[Unit]
+Description=VK TURN Proxy Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root
+LimitNOFILE=1048576
+ExecStart=/root/server-linux-$SYS_ARCH $EXEC_ARGS
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF_SVC
+                            systemctl daemon-reload
+                            
                             echo "$LATEST_TAG" > /root/.vk-proxy-version
                             systemctl start vk-proxy
                             CURRENT_VERSION=$LATEST_TAG
@@ -212,10 +270,10 @@ while true; do
             echo -e "Текущая реализация: ${CYAN}${PROXY_REPO}${NC}"
             echo "Доступные реализации:"
             echo "1) cacggghp/vk-turn-proxy (Оригинал)"
-            echo "2) kiper292/vk-turn-proxy (Форк, \e[9mподдержка WB Stream\e[0m)"
+            echo -e "2) kiper292/vk-turn-proxy (Форк, \e[9mподдержка WB Stream\e[0m)"
             echo "3) Urtyom-Alyanov/turn-proxy (Ядро на Rust, только amd64/x86_64)"
             echo "4) Moroka8/vk-turn-proxy (Форк)"
-            echo "5) alxmcp/vk-turn-proxy (Форк, поддержка Yandex Telemost DC)"
+            echo "5) alxmcp/vk-turn-proxy (Форк, поддержка Yandex / SaluteJazz)"
             echo "0) Отмена"
             read -p "Выберите новую реализацию [1-5 или 0]: " repo_choice
             
@@ -294,7 +352,7 @@ EOF_SVC
             if [[ "$confirm" =~ ^[Yy]$ ]]; then
                 systemctl stop vk-proxy; systemctl disable vk-proxy; rm -f /etc/systemd/system/vk-proxy.service; systemctl daemon-reload
                 if command -v ufw &> /dev/null; then ufw delete allow $PROXY_PORT/tcp >/dev/null 2>&1; ufw delete allow $PROXY_PORT/udp >/dev/null 2>&1; fi
-                rm -f /root/server-linux-$SYS_ARCH /root/.vk-proxy-version /usr/local/bin/vk-panel /root/.vk-proxy-repo /root/.vk-proxy-port /root/.vk-proxy-target-port /root/.vk-proxy-vless /root/.vk-proxy-custom-args /root/.vk-proxy-yandex-dc /root/.vk-proxy-yandex-link
+                rm -f /root/server-linux-$SYS_ARCH /root/.vk-proxy-version /usr/local/bin/vk-panel /root/.vk-proxy-repo /root/.vk-proxy-port /root/.vk-proxy-target-port /root/.vk-proxy-vless /root/.vk-proxy-custom-args /root/.vk-proxy-yandex-link /root/.vk-proxy-dc-mode /root/.vk-proxy-jazz-room /root/.vk-proxy-yandex-dc
                 echo -e "${GREEN}Прокси успешно удален.${NC}"; exit 0
             fi ;;
         7)
@@ -454,22 +512,40 @@ EOF_SVC
             echo ""
             if [[ -f /root/.vk-proxy-custom-args ]] && [[ -n "$(cat /root/.vk-proxy-custom-args)" ]]; then
                 echo -e "${YELLOW}⚠️ ВНИМАНИЕ: У вас активны кастомные аргументы запуска!${NC}"
-                echo -e "Настройки Yandex DC сохранятся, но ${RED}НЕ ПРИМЕНЯТСЯ${NC} к службе, пока вы не сбросите кастомные настройки (пункт 10)."
+                echo -e "Настройки DataChannel сохранятся, но ${RED}НЕ ПРИМЕНЯТСЯ${NC} к службе, пока вы не сбросите кастомные настройки (пункт 10)."
                 echo ""
             fi
 
-            if [[ -f /root/.vk-proxy-yandex-dc ]] && [[ "$(cat /root/.vk-proxy-yandex-dc)" == "1" ]]; then
-                echo "0" > /root/.vk-proxy-yandex-dc
-                echo -e "${YELLOW}Режим Yandex Telemost DC будет отключен.${NC}"
+            if [[ -f /root/.vk-proxy-dc-mode ]] && [[ "$(cat /root/.vk-proxy-dc-mode)" == "1" ]]; then
+                echo "0" > /root/.vk-proxy-dc-mode
+                echo -e "${YELLOW}Режим DataChannel будет отключен.${NC}"
             else
-                echo -e "${CYAN}Настройка Yandex Telemost DC${NC}"
-                read -p "Введи ссылку на звонок Yandex (начинается с https://telemost.yandex.ru/j/): " input_link
-                if [[ -n "$input_link" ]]; then
-                    echo "$input_link" > /root/.vk-proxy-yandex-link
-                    echo "1" > /root/.vk-proxy-yandex-dc
-                    echo -e "${GREEN}Режим Yandex Telemost DC будет включен!${NC}"
+                echo -e "${CYAN}Настройка DataChannel (без TURN)${NC}"
+                echo "1) SaluteJazz"
+                echo "2) Яндекс Телемост"
+                read -p "Выберите сервис [1-2]: " dc_choice
+
+                if [[ "$dc_choice" == "1" ]]; then
+                    read -p "Введи комнату (нажми Enter для 'any' - сервер создаст случайную, название и пароль смотрите в логах): " input_room
+                    input_room=${input_room:-any}
+                    echo "$input_room" > /root/.vk-proxy-jazz-room
+                    rm -f /root/.vk-proxy-yandex-link
+                    echo "1" > /root/.vk-proxy-dc-mode
+                    echo -e "${GREEN}Режим SaluteJazz DataChannel будет включен!${NC}"
+                elif [[ "$dc_choice" == "2" ]]; then
+                    read -p "Введи ссылку на звонок Yandex (начинается с https://telemost.yandex.ru/j/): " input_link
+                    if [[ -n "$input_link" ]]; then
+                        echo "$input_link" > /root/.vk-proxy-yandex-link
+                        rm -f /root/.vk-proxy-jazz-room
+                        echo "1" > /root/.vk-proxy-dc-mode
+                        echo -e "${GREEN}Режим Yandex Telemost DataChannel будет включен!${NC}"
+                    else
+                        echo -e "${RED}Ссылка не введена. Отмена.${NC}"
+                        sleep 2
+                        continue
+                    fi
                 else
-                    echo -e "${RED}Ссылка не введена. Отмена.${NC}"
+                    echo -e "${RED}Неверный выбор. Отмена.${NC}"
                     sleep 2
                     continue
                 fi
@@ -502,7 +578,7 @@ EOF_SVC
         10)
             echo ""
             echo -e "${CYAN}Кастомные аргументы запуска (Raw command)${NC}"
-            echo -e "Внимание: если задать кастомные аргументы, настройки портов, Yandex DC и флага -vless из панели ${RED}будут игнорироваться${NC}!"
+            echo -e "Внимание: если задать кастомные аргументы, настройки портов, DataChannel и флага -vless из панели ${RED}будут игнорироваться${NC}!"
             echo "Если меняешь внешний порт в этом режиме, не забудь открыть его в UFW вручную."
             echo ""
             echo -e "Текущие аргументы:"
@@ -631,6 +707,11 @@ echo "   Ультимативный Установщик VPN + vk-turn-proxy    
 echo "==================================================="
 echo ""
 
+# Миграция переменных перед установкой на всякий случай
+if [[ -f /root/.vk-proxy-yandex-dc ]]; then
+    mv /root/.vk-proxy-yandex-dc /root/.vk-proxy-dc-mode
+fi
+
 # 1. Проверка зависимостей
 echo "[1/9] Установка зависимостей (curl, wget, jq, ufw, qrencode)..."
 if command -v apt-get &> /dev/null; then
@@ -649,10 +730,10 @@ if [[ "$ARCH" == "x86_64" ]]; then SYS_ARCH="amd64"; else SYS_ARCH="arm64"; fi
 echo ""
 echo "[2/9] Выбор реализации vk-turn-proxy..."
 echo "1) cacggghp/vk-turn-proxy (Оригинал, по умолчанию)"
-echo "2) kiper292/vk-turn-proxy (Форк, \e[9mподдержка WB Stream\e[0m)"
+echo -e "2) kiper292/vk-turn-proxy (Форк, \e[9mподдержка WB Stream\e[0m)"
 echo "3) Urtyom-Alyanov/turn-proxy (Ядро на Rust, только amd64/x86_64)"
 echo "4) Moroka8/vk-turn-proxy (Форк)"
-echo "5) alxmcp/vk-turn-proxy (Форк, поддержка Yandex Telemost DC)"
+echo "5) alxmcp/vk-turn-proxy (Форк, поддержка DataChannel SaluteJazz / Yandex)"
 read -p "Твой выбор [1-5]: " repo_choice
 
 case "$repo_choice" in
@@ -889,16 +970,20 @@ if [[ -f /root/.vk-proxy-custom-args ]] && [[ -n "$(cat /root/.vk-proxy-custom-a
     EXEC_ARGS=$(cat /root/.vk-proxy-custom-args)
 else
     if [[ -f /root/.vk-proxy-vless ]] && [[ "$(cat /root/.vk-proxy-vless)" == "1" ]]; then VLESS_FLAG=" -vless"; else VLESS_FLAG=""; fi
-    if [[ -f /root/.vk-proxy-yandex-dc ]] && [[ "$(cat /root/.vk-proxy-yandex-dc)" == "1" ]] && [[ -f /root/.vk-proxy-yandex-link ]]; then 
-        YANDEX_FLAG=" -yandex-link $(cat /root/.vk-proxy-yandex-link) -telemost-dc"
-    else 
-        YANDEX_FLAG=""
+    
+    DC_FLAG=""
+    if [[ -f /root/.vk-proxy-dc-mode ]] && [[ "$(cat /root/.vk-proxy-dc-mode)" == "1" ]]; then
+        if [[ -f /root/.vk-proxy-jazz-room ]]; then
+            DC_FLAG=" -jazz-room $(cat /root/.vk-proxy-jazz-room) -dc"
+        elif [[ -f /root/.vk-proxy-yandex-link ]]; then
+            DC_FLAG=" -yandex-link $(cat /root/.vk-proxy-yandex-link) -dc"
+        fi
     fi
 
     if [[ "$PROXY_REPO" == *"Urtyom-Alyanov"* ]]; then
-        EXEC_ARGS="-N -l 0.0.0.0:$PROXY_PORT -p 127.0.0.1:$TARGET_PORT -n 10000$YANDEX_FLAG$VLESS_FLAG"
+        EXEC_ARGS="-N -l 0.0.0.0:$PROXY_PORT -p 127.0.0.1:$TARGET_PORT -n 10000$DC_FLAG$VLESS_FLAG"
     else
-        EXEC_ARGS="-listen 0.0.0.0:$PROXY_PORT -connect 127.0.0.1:$TARGET_PORT$YANDEX_FLAG$VLESS_FLAG"
+        EXEC_ARGS="-listen 0.0.0.0:$PROXY_PORT -connect 127.0.0.1:$TARGET_PORT$DC_FLAG$VLESS_FLAG"
     fi
 fi
 
