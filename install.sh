@@ -41,7 +41,7 @@ fi
 # Читаем и мигрируем репозиторий
 if [[ -f /root/.vk-proxy-repo ]]; then 
     PROXY_REPO=$(cat /root/.vk-proxy-repo)
-    if [[ "$PROXY_REPO" != *"/"* ]]; then
+    if [[ "$PROXY_REPO" != *"/"* ]] && [[ "$PROXY_REPO" != "Прямая ссылка" ]]; then
         if [[ "$PROXY_REPO" == "Urtyom-Alyanov" ]]; then
             PROXY_REPO="Urtyom-Alyanov/turn-proxy"
         else
@@ -61,7 +61,6 @@ fi
 # Автоматическая миграция со старого флага -telemost-dc на новый -dc
 if [[ -f /root/.vk-proxy-yandex-dc ]]; then
     mv /root/.vk-proxy-yandex-dc /root/.vk-proxy-dc-mode
-    # Если мигрируем, нужно перезаписать аргументы службы
     MIGRATION_NEEDED=1
 fi
 
@@ -101,7 +100,14 @@ get_exec_args() {
             fi
         fi
 
-        if [[ "$PROXY_REPO" == *"Urtyom-Alyanov"* ]]; then
+        local CORE_TYPE="go"
+        if [[ -f /root/.vk-proxy-core-type ]]; then
+            CORE_TYPE=$(cat /root/.vk-proxy-core-type)
+        elif [[ "$PROXY_REPO" == *"Urtyom-Alyanov"* ]]; then
+            CORE_TYPE="rust"
+        fi
+
+        if [[ "$CORE_TYPE" == "rust" ]]; then
             FINAL_ARGS="-N -l 0.0.0.0:$PROXY_PORT -p 127.0.0.1:$TARGET_PORT -n 10000$DC_FLAG$VLESS_FLAG"
         else
             FINAL_ARGS="-listen 0.0.0.0:$PROXY_PORT -connect 127.0.0.1:$TARGET_PORT$DC_FLAG$VLESS_FLAG"
@@ -137,25 +143,18 @@ fi
 while true; do
     clear
     
-    # Определяем, какому VPN принадлежит целевой порт
     TARGET_SERVICE="Введен вручную / Неизвестен"
     shopt -s nullglob
-    
-    # 1. Проверяем Hysteria2
     for conf in /etc/hysteria/*.yaml /etc/hysteria/*.json; do
         port=$(grep -i -oP -m 1 '^listen:\s*(?:.*:)?\K\d+' "$conf" 2>/dev/null)
         if [[ "$port" == "$TARGET_PORT" ]]; then TARGET_SERVICE="Hysteria2"; break; fi
     done
-    
-    # 2. Проверяем AmneziaWG
     if [[ "$TARGET_SERVICE" == "Введен вручную / Неизвестен" ]]; then
         for conf in /etc/amneziawg/*.conf /etc/amnezia/amneziawg/*.conf; do
             port=$(grep -oP -m 1 'ListenPort\s*=\s*\K\d+' "$conf" 2>/dev/null)
             if [[ "$port" == "$TARGET_PORT" ]]; then TARGET_SERVICE="AmneziaWG"; break; fi
         done
     fi
-    
-    # 3. Проверяем WireGuard
     if [[ "$TARGET_SERVICE" == "Введен вручную / Неизвестен" ]]; then
         for conf in /etc/wireguard/*.conf; do
             port=$(grep -oP -m 1 'ListenPort\s*=\s*\K\d+' "$conf" 2>/dev/null)
@@ -164,28 +163,10 @@ while true; do
     fi
     shopt -u nullglob
 
-    # Статус службы
-    if systemctl is-active --quiet vk-proxy; then 
-        PROXY_STATE="${GREEN}Активен${NC}"
-    else 
-        PROXY_STATE="${RED}Остановлен${NC}"
-    fi
-
-    # Статус флага vless
-    if [[ -f /root/.vk-proxy-vless ]] && [[ "$(cat /root/.vk-proxy-vless)" == "1" ]]; then
-        VLESS_TEXT="${GREEN}Включен${NC}"
-    else
-        VLESS_TEXT="${RED}Выключен${NC}"
-    fi
-
-    # Статус режима DataChannel (Telemost / Jazz)
-    if [[ -f /root/.vk-proxy-dc-mode ]] && [[ "$(cat /root/.vk-proxy-dc-mode)" == "1" ]]; then
-        DC_TEXT="${GREEN}Включен${NC}"
-    else
-        DC_TEXT="${RED}Выключен${NC}"
-    fi
-
-    # Статус режима (Авто/Кастом)
+    if systemctl is-active --quiet vk-proxy; then PROXY_STATE="${GREEN}Активен${NC}"; else PROXY_STATE="${RED}Остановлен${NC}"; fi
+    if [[ -f /root/.vk-proxy-vless ]] && [[ "$(cat /root/.vk-proxy-vless)" == "1" ]]; then VLESS_TEXT="${GREEN}Включен${NC}"; else VLESS_TEXT="${RED}Выключен${NC}"; fi
+    if [[ -f /root/.vk-proxy-dc-mode ]] && [[ "$(cat /root/.vk-proxy-dc-mode)" == "1" ]]; then DC_TEXT="${GREEN}Включен${NC}"; else DC_TEXT="${RED}Выключен${NC}"; fi
+    
     if [[ -f /root/.vk-proxy-custom-args ]] && [[ -n "$(cat /root/.vk-proxy-custom-args)" ]]; then
         MODE_TEXT="${YELLOW}Кастомные аргументы (Raw)${NC}"
     else
@@ -193,7 +174,7 @@ while true; do
     fi
 
 	echo "========================================================================="
-    echo -e "${CYAN}                       VK TURN Proxy Manager v1.8                        ${NC}"
+    echo -e "${CYAN}                       VK TURN Proxy Manager v1.9                        ${NC}"
     echo "========================================================================="
     echo -e " 🟢 Статус:      ${PROXY_STATE}"
     echo -e " 📦 Версия:      ${YELLOW}${CURRENT_VERSION}${NC} (Ядро: ${CYAN}${PROXY_REPO}${NC})"
@@ -235,6 +216,13 @@ while true; do
         2) systemctl stop vk-proxy; echo -e "${RED}Остановлено!${NC}"; sleep 1 ;;
         3) if systemctl restart vk-proxy; then echo -e "${GREEN}Успешно перезапущено!${NC}"; else echo -e "${RED}Ошибка перезапуска! Проверьте логи (Пункт 13).${NC}"; fi; sleep 2 ;;
         4)
+            if [[ "$PROXY_REPO" == "Прямая ссылка" || "$PROXY_REPO" == "Custom_Direct_Link" ]]; then
+                echo -e "${YELLOW}Ядро установлено по прямой ссылке. Автоматическое обновление через API недоступно.${NC}"
+                echo "Для обновления используйте пункт 5 (Сменить реализацию) и вставьте новую прямую ссылку."
+                read -n 1 -s -r -p "Нажми любую клавишу..."
+                continue
+            fi
+            
             echo "Проверка обновлений через GitHub API ($PROXY_REPO)..."
             API_RESP=$(curl -s --connect-timeout 10 "$API_URL")
             LATEST_TAG=$(echo "$API_RESP" | jq -r ".tag_name")
@@ -259,7 +247,6 @@ while true; do
                             mv /tmp/server-linux-$SYS_ARCH /root/server-linux-$SYS_ARCH
                             chmod +x /root/server-linux-$SYS_ARCH
                             
-                            # Пересобираем аргументы на случай, если при обновлении изменились стандарты
                             EXEC_ARGS=$(get_exec_args)
 cat <<EOF_SVC > /etc/systemd/system/vk-proxy.service
 [Unit]
@@ -299,20 +286,50 @@ EOF_SVC
             echo -e "${YELLOW}======================================================${NC}"
             echo -e "Текущая реализация: ${CYAN}${PROXY_REPO}${NC}"
             echo "Доступные реализации:"
-            echo "1) cacggghp/vk-turn-proxy (Оригинал)"
+            echo -e "1) cacggghp/vk-turn-proxy (Оригинал)"
             echo -e "2) kiper292/vk-turn-proxy (Форк, \e[9mподдержка WB Stream\e[0m)"
-            echo "3) Urtyom-Alyanov/turn-proxy (Ядро на Rust, только amd64/x86_64)"
-            echo "4) Moroka8/vk-turn-proxy (Форк)"
-            echo "5) alxmcp/vk-turn-proxy (Форк, поддержка Yandex / SaluteJazz)"
+            echo -e "3) Urtyom-Alyanov/turn-proxy (Ядро на Rust, только amd64/x86_64)"
+            echo -e "4) Moroka8/vk-turn-proxy (Форк)"
+            echo -e "5) alxmcp/vk-turn-proxy (Форк, \e[9mподдержка Yandex / SaluteJazz\e[0m)"
+            echo -e "6) samosvalishe/vk-turn-proxy (Форк)"
+            echo -e "7) Сторонний репозиторий GitHub ИЛИ прямая ссылка на бинарник"
             echo "0) Отмена"
-            read -p "Выберите новую реализацию [1-5 или 0]: " repo_choice
+            read -p "Выберите новую реализацию [1-7 или 0]: " repo_choice
             
             case "$repo_choice" in
-                1) NEW_REPO="cacggghp/vk-turn-proxy" ;;
-                2) NEW_REPO="kiper292/vk-turn-proxy" ;;
-                3) NEW_REPO="Urtyom-Alyanov/turn-proxy" ;;
-                4) NEW_REPO="Moroka8/vk-turn-proxy" ;;
-                5) NEW_REPO="alxmcp/vk-turn-proxy" ;;
+                1) NEW_REPO="cacggghp/vk-turn-proxy"; NEW_CORE_TYPE="go" ;;
+                2) NEW_REPO="kiper292/vk-turn-proxy"; NEW_CORE_TYPE="go" ;;
+                3) NEW_REPO="Urtyom-Alyanov/turn-proxy"; NEW_CORE_TYPE="rust" ;;
+                4) NEW_REPO="Moroka8/vk-turn-proxy"; NEW_CORE_TYPE="go" ;;
+                5) NEW_REPO="alxmcp/vk-turn-proxy"; NEW_CORE_TYPE="go" ;;
+                6) NEW_REPO="samosvalishe/vk-turn-proxy"; NEW_CORE_TYPE="go" ;;
+                7)
+                    read -p "Введи репозиторий (owner/repo) ИЛИ прямую ссылку на бинарный файл: " custom_input
+                    if [[ "$custom_input" =~ ^https?:// ]] && [[ ! "$custom_input" =~ ^https?://(www\.)?github\.com/[^/]+/[^/]+/?$ ]]; then
+                        NEW_REPO="Custom_Direct_Link"
+                        DOWNLOAD_URL="$custom_input"
+                        LATEST_TAG="Custom"
+                    else
+                        NEW_REPO=$(echo "$custom_input" | sed -E 's|^https?://github\.com/||' | sed 's/\.git$//' | awk -F/ '{print $1"/"$2}')
+                        if [[ -z "$NEW_REPO" || "$NEW_REPO" != *"/"* || "$NEW_REPO" == "/" ]]; then
+                            echo -e "${RED}Неверный формат.${NC}"
+                            sleep 1; continue
+                        fi
+                    fi
+                    
+                    echo -e "\n${CYAN}Какой тип аргументов использовать для этого кастомного ядра?${NC}"
+                    echo "1) Стандартные (Go: -listen 0.0.0.0:PORT -connect 127.0.0.1:PORT)"
+                    echo "2) Rust (Urtyom-Alyanov: -N -l 0.0.0.0:PORT -p 127.0.0.1:PORT)"
+                    echo "3) Задать вручную (Raw command)"
+                    read -p "Твой выбор [1-3]: " custom_core_type
+                    if [[ "$custom_core_type" == "2" ]]; then
+                        NEW_CORE_TYPE="rust"
+                    elif [[ "$custom_core_type" == "3" ]]; then
+                        NEW_CORE_TYPE="custom"
+                    else
+                        NEW_CORE_TYPE="go"
+                    fi
+                    ;;
                 0) continue ;;
                 *) echo -e "${RED}Неверный выбор.${NC}"; sleep 1; continue ;;
             esac
@@ -321,28 +338,28 @@ EOF_SVC
                 echo -e "${YELLOW}Эта реализация уже установлена!${NC}"; sleep 1; continue
             fi
             
-            read -p "Вы уверены, что хотите сменить на $NEW_REPO? [y/N]: " confirm_switch
+            read -p "Вы уверены, что хотите сменить ядро? [y/N]: " confirm_switch
             if [[ "$confirm_switch" =~ ^[Yy]$ ]]; then
-                echo "Получение данных с GitHub ($NEW_REPO)..."
-                NEW_API_URL="https://api.github.com/repos/${NEW_REPO}/releases/latest"
-                API_RESP=$(curl -s --connect-timeout 10 "$NEW_API_URL")
-                LATEST_TAG=$(echo "$API_RESP" | jq -r ".tag_name")
                 
-                if [[ "$LATEST_TAG" == "null" || -z "$LATEST_TAG" ]]; then
-                    echo -e "${RED}Ошибка API GitHub (возможно исчерпан лимит или нет релизов). Отмена.${NC}"
-                else
-                    DOWNLOAD_URL=$(get_download_url "$API_RESP" "$SYS_ARCH" "$NEW_REPO")
-                    if [[ "$DOWNLOAD_URL" == "null" || -z "$DOWNLOAD_URL" ]]; then
-                        echo -e "${RED}Ошибка получения релиза $NEW_REPO. Возможно бинарник не опубликован. Отмена.${NC}"
-                    else
-                        echo "Скачивание ядра..."
-                        if wget -q --show-progress -O /tmp/server-linux-$SYS_ARCH "$DOWNLOAD_URL"; then
-                            systemctl stop vk-proxy
-                            mv /tmp/server-linux-$SYS_ARCH /root/server-linux-$SYS_ARCH
-                            chmod +x /root/server-linux-$SYS_ARCH
-                            
-                            PROXY_REPO=$NEW_REPO
-                            EXEC_ARGS=$(get_exec_args)
+                if [[ "$NEW_REPO" == "Custom_Direct_Link" ]]; then
+                    echo "Скачивание ядра по прямой ссылке..."
+                    if wget -q --show-progress -O /tmp/server-linux-$SYS_ARCH "$DOWNLOAD_URL"; then
+                        systemctl stop vk-proxy
+                        mv /tmp/server-linux-$SYS_ARCH /root/server-linux-$SYS_ARCH
+                        chmod +x /root/server-linux-$SYS_ARCH
+                        
+                        PROXY_REPO="Прямая ссылка"
+                        
+                        echo "$NEW_CORE_TYPE" > /root/.vk-proxy-core-type
+                        if [[ "$NEW_CORE_TYPE" == "custom" ]]; then
+                            echo -e "\nВведи кастомные аргументы (например: -listen 0.0.0.0:$PROXY_PORT -connect 127.0.0.1:$TARGET_PORT -vless)"
+                            read -p "Аргументы: " manual_custom_args
+                            echo "$manual_custom_args" > /root/.vk-proxy-custom-args
+                        else
+                            rm -f /root/.vk-proxy-custom-args
+                        fi
+                        
+                        EXEC_ARGS=$(get_exec_args)
 
 cat <<EOF_SVC > /etc/systemd/system/vk-proxy.service
 [Unit]
@@ -361,15 +378,75 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 EOF_SVC
-                            systemctl daemon-reload
-                            
-                            echo "$NEW_REPO" > /root/.vk-proxy-repo
-                            echo "$LATEST_TAG" > /root/.vk-proxy-version
-                            systemctl start vk-proxy
-                            CURRENT_VERSION=$LATEST_TAG
-                            echo -e "${GREEN}Успешно изменено на реализацию $NEW_REPO ($LATEST_TAG)!${NC}"
+                        systemctl daemon-reload
+                        
+                        echo "Прямая ссылка" > /root/.vk-proxy-repo
+                        echo "Custom" > /root/.vk-proxy-version
+                        systemctl start vk-proxy
+                        CURRENT_VERSION="Custom"
+                        echo -e "${GREEN}Успешно обновлено по прямой ссылке!${NC}"
+                    else
+                        echo -e "${RED}Ошибка скачивания по прямой ссылке. Отмена.${NC}"
+                    fi
+                else
+                    echo "Получение данных с GitHub ($NEW_REPO)..."
+                    NEW_API_URL="https://api.github.com/repos/${NEW_REPO}/releases/latest"
+                    API_RESP=$(curl -s --connect-timeout 10 "$NEW_API_URL")
+                    LATEST_TAG=$(echo "$API_RESP" | jq -r ".tag_name")
+                    
+                    if [[ "$LATEST_TAG" == "null" || -z "$LATEST_TAG" ]]; then
+                        echo -e "${RED}Ошибка API GitHub (возможно исчерпан лимит или нет релизов). Отмена.${NC}"
+                    else
+                        DOWNLOAD_URL=$(get_download_url "$API_RESP" "$SYS_ARCH" "$NEW_REPO")
+                        if [[ "$DOWNLOAD_URL" == "null" || -z "$DOWNLOAD_URL" ]]; then
+                            echo -e "${RED}Ошибка получения релиза $NEW_REPO. Возможно бинарник не опубликован. Отмена.${NC}"
                         else
-                            echo -e "${RED}Ошибка скачивания ядра. Отмена.${NC}"
+                            echo "Скачивание ядра..."
+                            if wget -q --show-progress -O /tmp/server-linux-$SYS_ARCH "$DOWNLOAD_URL"; then
+                                systemctl stop vk-proxy
+                                mv /tmp/server-linux-$SYS_ARCH /root/server-linux-$SYS_ARCH
+                                chmod +x /root/server-linux-$SYS_ARCH
+                                
+                                PROXY_REPO=$NEW_REPO
+                                
+                                echo "$NEW_CORE_TYPE" > /root/.vk-proxy-core-type
+                                if [[ "$NEW_CORE_TYPE" == "custom" ]]; then
+                                    echo -e "\nВведи кастомные аргументы (например: -listen 0.0.0.0:$PROXY_PORT -connect 127.0.0.1:$TARGET_PORT -vless)"
+                                    read -p "Аргументы: " manual_custom_args
+                                    echo "$manual_custom_args" > /root/.vk-proxy-custom-args
+                                else
+                                    rm -f /root/.vk-proxy-custom-args
+                                fi
+                                
+                                EXEC_ARGS=$(get_exec_args)
+
+cat <<EOF_SVC > /etc/systemd/system/vk-proxy.service
+[Unit]
+Description=VK TURN Proxy Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root
+LimitNOFILE=1048576
+ExecStart=/root/server-linux-$SYS_ARCH $EXEC_ARGS
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF_SVC
+                                systemctl daemon-reload
+                                
+                                echo "$NEW_REPO" > /root/.vk-proxy-repo
+                                echo "$LATEST_TAG" > /root/.vk-proxy-version
+                                systemctl start vk-proxy
+                                CURRENT_VERSION=$LATEST_TAG
+                                echo -e "${GREEN}Успешно изменено на реализацию $NEW_REPO ($LATEST_TAG)!${NC}"
+                            else
+                                echo -e "${RED}Ошибка скачивания ядра. Отмена.${NC}"
+                            fi
                         fi
                     fi
                 fi
@@ -382,7 +459,7 @@ EOF_SVC
             if [[ "$confirm" =~ ^[Yy]$ ]]; then
                 systemctl stop vk-proxy; systemctl disable vk-proxy; rm -f /etc/systemd/system/vk-proxy.service; systemctl daemon-reload
                 if command -v ufw &> /dev/null; then ufw delete allow $PROXY_PORT/tcp >/dev/null 2>&1; ufw delete allow $PROXY_PORT/udp >/dev/null 2>&1; fi
-                rm -f /root/server-linux-$SYS_ARCH /root/.vk-proxy-version /usr/local/bin/vk-panel /root/.vk-proxy-repo /root/.vk-proxy-port /root/.vk-proxy-target-port /root/.vk-proxy-vless /root/.vk-proxy-custom-args /root/.vk-proxy-yandex-link /root/.vk-proxy-dc-mode /root/.vk-proxy-jazz-room /root/.vk-proxy-yandex-dc
+                rm -f /root/server-linux-$SYS_ARCH /root/.vk-proxy-version /usr/local/bin/vk-panel /root/.vk-proxy-repo /root/.vk-proxy-core-type /root/.vk-proxy-port /root/.vk-proxy-target-port /root/.vk-proxy-vless /root/.vk-proxy-custom-args /root/.vk-proxy-yandex-link /root/.vk-proxy-dc-mode /root/.vk-proxy-jazz-room /root/.vk-proxy-yandex-dc
                 echo -e "${GREEN}Прокси успешно удален.${NC}"; exit 0
             fi ;;
         7)
@@ -696,21 +773,29 @@ EOF_SVC
         12)
             echo ""
             echo -e "${CYAN}Доступные конфигурации клиентов:${NC}"
-            shopt -s nullglob
-            CLIENT_CONFS=(/root/*.conf)
-            shopt -u nullglob
+            
+            # Собираем массив файлов из /root (включая 1 уровень вложенности)
+            CLIENT_CONFS=()
+            while IFS= read -r file; do
+                CLIENT_CONFS+=("$file")
+            done < <(find /root -maxdepth 2 -type f \( -name "*.conf" -o -name "*.yaml" -o -name "*.yml" -o -name "*.json" -o -name "*.txt" \) 2>/dev/null)
 
             if [ ${#CLIENT_CONFS[@]} -eq 0 ]; then
-                echo -e "${RED}Файлы конфигурации клиентов (.conf) не найдены в /root/${NC}"
+                echo -e "${RED}Файлы конфигурации клиентов (.conf, .yaml, .txt...) не найдены в /root/${NC}"
+                echo -e "${YELLOW}Возможно, установщик Hysteria2 не сохранил конфиг в виде файла, а просто вывел ссылку (hy2://...) в консоль при установке.${NC}"
             else
                 for i in "${!CLIENT_CONFS[@]}"; do
-                    echo "$((i+1)). $(basename "${CLIENT_CONFS[$i]}")"
+                    # Красиво выводим имя файла с путем (чтобы было видно, если он в папке)
+                    echo "$((i+1)). ${CLIENT_CONFS[$i]}"
                 done
                 echo ""
-                read -p "Выбери номер клиента для показа QR-кода: " qr_choice
-                if [[ "$qr_choice" -ge 1 && "$qr_choice" -le ${#CLIENT_CONFS[@]} ]]; then
+                read -p "Выбери номер клиента для показа QR-кода (или 0 для отмены): " qr_choice
+                if [[ "$qr_choice" == "0" ]]; then
+                    continue
+                elif [[ "$qr_choice" -ge 1 && "$qr_choice" -le ${#CLIENT_CONFS[@]} ]]; then
                     TARGET_CONF="${CLIENT_CONFS[$((qr_choice-1))]}"
                     echo -e "${GREEN}QR-код для $(basename "$TARGET_CONF"):${NC}"
+                    
                     qrencode -t ansiutf8 < "$TARGET_CONF"
                 else
                     echo -e "${RED}Неверный выбор.${NC}"
@@ -745,7 +830,6 @@ echo "   Ультимативный Установщик VPN + vk-turn-proxy    
 echo "==================================================="
 echo ""
 
-# Миграция переменных перед установкой на всякий случай
 if [[ -f /root/.vk-proxy-yandex-dc ]]; then
     mv /root/.vk-proxy-yandex-dc /root/.vk-proxy-dc-mode
 fi
@@ -767,29 +851,59 @@ if [[ "$ARCH" == "x86_64" ]]; then SYS_ARCH="amd64"; else SYS_ARCH="arm64"; fi
 # 3. Выбор реализации
 echo ""
 echo "[2/9] Выбор реализации vk-turn-proxy..."
-echo "1) cacggghp/vk-turn-proxy (Оригинал, по умолчанию)"
+echo -e "1) cacggghp/vk-turn-proxy (Оригинал, по умолчанию)"
 echo -e "2) kiper292/vk-turn-proxy (Форк, \e[9mподдержка WB Stream\e[0m)"
-echo "3) Urtyom-Alyanov/turn-proxy (Ядро на Rust, только amd64/x86_64)"
-echo "4) Moroka8/vk-turn-proxy (Форк)"
-echo "5) alxmcp/vk-turn-proxy (Форк, поддержка DataChannel SaluteJazz / Yandex)"
-read -p "Твой выбор [1-5]: " repo_choice
+echo -e "3) Urtyom-Alyanov/turn-proxy (Ядро на Rust, только amd64/x86_64)"
+echo -e "4) Moroka8/vk-turn-proxy (Форк)"
+echo -e "5) alxmcp/vk-turn-proxy (Форк, \e[9mподдержка DataChannel SaluteJazz / Yandex\e[0m)"
+echo -e "6) samosvalishe/vk-turn-proxy (Форк)"
+echo -e "7) Сторонний репозиторий GitHub ИЛИ прямая ссылка на бинарник"
+read -p "Твой выбор [1-7]: " repo_choice
 
 case "$repo_choice" in
-  2) PROXY_REPO="kiper292/vk-turn-proxy" ;;
-  3) PROXY_REPO="Urtyom-Alyanov/turn-proxy" ;;
-  4) PROXY_REPO="Moroka8/vk-turn-proxy" ;;
-  5) PROXY_REPO="alxmcp/vk-turn-proxy" ;;
-  *) PROXY_REPO="cacggghp/vk-turn-proxy" ;;
+  2) PROXY_REPO="kiper292/vk-turn-proxy"; echo "go" > /root/.vk-proxy-core-type ;;
+  3) PROXY_REPO="Urtyom-Alyanov/turn-proxy"; echo "rust" > /root/.vk-proxy-core-type ;;
+  4) PROXY_REPO="Moroka8/vk-turn-proxy"; echo "go" > /root/.vk-proxy-core-type ;;
+  5) PROXY_REPO="alxmcp/vk-turn-proxy"; echo "go" > /root/.vk-proxy-core-type ;;
+  6) PROXY_REPO="samosvalishe/vk-turn-proxy"; echo "go" > /root/.vk-proxy-core-type ;;
+  7)
+     read -p "Введи репозиторий (owner/repo) ИЛИ прямую ссылку на бинарный файл: " custom_input
+     if [[ "$custom_input" =~ ^https?:// ]] && [[ ! "$custom_input" =~ ^https?://(www\.)?github\.com/[^/]+/[^/]+/?$ ]]; then
+         PROXY_REPO="Custom_Direct_Link"
+         DOWNLOAD_URL="$custom_input"
+         LATEST_TAG="Custom"
+     else
+         PROXY_REPO=$(echo "$custom_input" | sed -E 's|^https?://github\.com/||' | sed 's/\.git$//' | awk -F/ '{print $1"/"$2}')
+         if [[ -z "$PROXY_REPO" || "$PROXY_REPO" != *"/"* || "$PROXY_REPO" == "/" ]]; then
+             echo "Неверный формат. Используем оригинал."
+             PROXY_REPO="cacggghp/vk-turn-proxy"
+             echo "go" > /root/.vk-proxy-core-type
+         fi
+     fi
+     
+     if [[ "$PROXY_REPO" == "Custom_Direct_Link" || "$PROXY_REPO" != "cacggghp/vk-turn-proxy" ]]; then
+         echo -e "\nКакой тип аргументов использовать для этого кастомного ядра?"
+         echo "1) Стандартные (Go: -listen 0.0.0.0:PORT -connect 127.0.0.1:PORT)"
+         echo "2) Rust (Urtyom-Alyanov: -N -l 0.0.0.0:PORT -p 127.0.0.1:PORT)"
+         echo "3) Задать вручную (Raw command)"
+         read -p "Твой выбор [1-3]: " custom_core_type
+         if [[ "$custom_core_type" == "2" ]]; then
+             echo "rust" > /root/.vk-proxy-core-type
+         elif [[ "$custom_core_type" == "3" ]]; then
+             echo "custom" > /root/.vk-proxy-core-type
+         else
+             echo "go" > /root/.vk-proxy-core-type
+         fi
+     fi
+     ;;
+  *) PROXY_REPO="cacggghp/vk-turn-proxy"; echo "go" > /root/.vk-proxy-core-type ;;
 esac
-
-echo "$PROXY_REPO" > /root/.vk-proxy-repo
-API_URL="https://api.github.com/repos/${PROXY_REPO}/releases/latest"
 
 # 4. Выбор порта прокси
 echo ""
 echo "[3/9] Настройка внешнего порта прокси (к нему будут подключаться клиенты через VK)..."
 DEFAULT_PROXY_PORT=56000
-if [[ "$PROXY_REPO" == "Urtyom-Alyanov/turn-proxy" ]]; then
+if [[ -f /root/.vk-proxy-core-type ]] && [[ "$(cat /root/.vk-proxy-core-type)" == "rust" ]]; then
     DEFAULT_PROXY_PORT=56040
 fi
 
@@ -1008,49 +1122,74 @@ else
     fi
 fi
 
-# Сохраняем целевой порт
 echo "$TARGET_PORT" > /root/.vk-proxy-target-port
 
 # 6. Скачивание ядра
 echo ""
-echo "[7/9] Загрузка ядра ($SYS_ARCH) из репозитория $PROXY_REPO..."
-API_RESP=$(curl -s --connect-timeout 10 "$API_URL")
-LATEST_TAG=$(echo "$API_RESP" | jq -r ".tag_name")
-DOWNLOAD_URL=""
-
-if [[ "$PROXY_REPO" == *"Urtyom-Alyanov"* ]]; then
-    DOWNLOAD_URL=$(echo "$API_RESP" | jq -r '.assets[] | select(.name == "turn-proxy-server") | .browser_download_url' | head -n 1)
+if [[ "$PROXY_REPO" == "Custom_Direct_Link" ]]; then
+    echo "[7/9] Загрузка ядра по прямой ссылке..."
+    if ! wget -q --show-progress -O /root/server-linux-$SYS_ARCH "$DOWNLOAD_URL"; then
+        echo "❌ Ошибка: Не удалось скачать ядро по прямой ссылке."
+        exit 1
+    fi
+    chmod +x /root/server-linux-$SYS_ARCH
+    echo "$LATEST_TAG" > /root/.vk-proxy-version
+    echo "Прямая ссылка" > /root/.vk-proxy-repo
+    PROXY_REPO="Прямая ссылка"
 else
-    DOWNLOAD_URL=$(echo "$API_RESP" | jq -r '.assets[] | select(.name == "server-linux-'"${SYS_ARCH}"'") | .browser_download_url' | head -n 1)
-fi
+    echo "[7/9] Загрузка ядра ($SYS_ARCH) из репозитория $PROXY_REPO..."
+    echo "$PROXY_REPO" > /root/.vk-proxy-repo
+    API_URL="https://api.github.com/repos/${PROXY_REPO}/releases/latest"
+    API_RESP=$(curl -s --connect-timeout 10 "$API_URL")
+    LATEST_TAG=$(echo "$API_RESP" | jq -r ".tag_name")
+    DOWNLOAD_URL=""
 
-if [[ "$DOWNLOAD_URL" == "null" || -z "$DOWNLOAD_URL" ]]; then
-    echo "❌ Ошибка: В репозитории $PROXY_REPO не найдено релизов для $SYS_ARCH."
-    exit 1
-fi
+    if [[ "$PROXY_REPO" == *"Urtyom-Alyanov"* ]]; then
+        DOWNLOAD_URL=$(echo "$API_RESP" | jq -r '.assets[] | select(.name == "turn-proxy-server") | .browser_download_url' | head -n 1)
+    else
+        DOWNLOAD_URL=$(echo "$API_RESP" | jq -r '.assets[] | select(.name == "server-linux-'"${SYS_ARCH}"'") | .browser_download_url' | head -n 1)
+    fi
 
-if ! wget -q --show-progress -O /root/server-linux-$SYS_ARCH "$DOWNLOAD_URL"; then
-    echo "❌ Ошибка: Не удалось скачать ядро прокси. Проверьте интернет или лимиты GitHub API."
-    exit 1
-fi
-chmod +x /root/server-linux-$SYS_ARCH
-echo "$LATEST_TAG" > /root/.vk-proxy-version
+    if [[ "$DOWNLOAD_URL" == "null" || -z "$DOWNLOAD_URL" ]]; then
+        echo "❌ Ошибка: В репозитории $PROXY_REPO не найдено релизов для $SYS_ARCH."
+        exit 1
+    fi
 
+    if ! wget -q --show-progress -O /root/server-linux-$SYS_ARCH "$DOWNLOAD_URL"; then
+        echo "❌ Ошибка: Не удалось скачать ядро прокси. Проверьте интернет или лимиты GitHub API."
+        exit 1
+    fi
+    chmod +x /root/server-linux-$SYS_ARCH
+    echo "$LATEST_TAG" > /root/.vk-proxy-version
+fi
 
 # 7. Выбор кастомных аргументов запуска
 echo ""
-echo "[8/9] Аргументы запуска"
-echo "Обычно скрипт генерирует их автоматически на базе портов, но ты можешь задать команду вручную (Raw mode)."
-read -p "Хочешь прописать кастомные аргументы запуска? [y/N]: " use_custom_args
-if [[ "$use_custom_args" =~ ^[Yy]$ ]]; then
+echo "[8/9] Настройка аргументов запуска..."
+if [[ -f /root/.vk-proxy-core-type ]] && [[ "$(cat /root/.vk-proxy-core-type)" == "custom" ]]; then
+    echo -e "Для вашего ядра выбран ручной режим (Raw)."
     echo "Введи аргументы (например: -listen 0.0.0.0:$PROXY_PORT -connect 127.0.0.1:$TARGET_PORT -vless)"
     read -p "Аргументы: " custom_args
     if [[ -n "$custom_args" ]]; then
         echo "$custom_args" > /root/.vk-proxy-custom-args
         echo "Сохранены кастомные аргументы!"
+    else
+        echo "go" > /root/.vk-proxy-core-type
+        echo "⚠️ Аргументы не введены. Использован стандартный Go-пресет."
+    fi
+else
+    read -p "Хочешь прописать кастомные аргументы запуска вручную (отменить автоматику)? [y/N]: " use_custom_args
+    if [[ "$use_custom_args" =~ ^[Yy]$ ]]; then
+        echo "Введи аргументы (например: -listen 0.0.0.0:$PROXY_PORT -connect 127.0.0.1:$TARGET_PORT -vless)"
+        read -p "Аргументы: " custom_args
+        if [[ -n "$custom_args" ]]; then
+            echo "$custom_args" > /root/.vk-proxy-custom-args
+            echo "Сохранены кастомные аргументы!"
+        fi
+    else
+        rm -f /root/.vk-proxy-custom-args
     fi
 fi
-
 
 # 8. Служба и Фаервол
 echo ""
@@ -1072,7 +1211,14 @@ else
         fi
     fi
 
-    if [[ "$PROXY_REPO" == *"Urtyom-Alyanov"* ]]; then
+    CORE_TYPE="go"
+    if [[ -f /root/.vk-proxy-core-type ]]; then
+        CORE_TYPE=$(cat /root/.vk-proxy-core-type)
+    elif [[ "$PROXY_REPO" == *"Urtyom-Alyanov"* ]]; then
+        CORE_TYPE="rust"
+    fi
+
+    if [[ "$CORE_TYPE" == "rust" ]]; then
         EXEC_ARGS="-N -l 0.0.0.0:$PROXY_PORT -p 127.0.0.1:$TARGET_PORT -n 10000$DC_FLAG$VLESS_FLAG"
     else
         EXEC_ARGS="-listen 0.0.0.0:$PROXY_PORT -connect 127.0.0.1:$TARGET_PORT$DC_FLAG$VLESS_FLAG"
