@@ -174,7 +174,7 @@ while true; do
     fi
 
 	echo "========================================================================="
-    echo -e "${CYAN}                       VK TURN Proxy Manager v1.9                        ${NC}"
+    echo -e "${CYAN}                       VK TURN Proxy Manager v1.9b                       ${NC}"
     echo "========================================================================="
     echo -e " 🟢 Статус:      ${PROXY_STATE}"
     echo -e " 📦 Версия:      ${YELLOW}${CURRENT_VERSION}${NC} (Ядро: ${CYAN}${PROXY_REPO}${NC})"
@@ -774,11 +774,11 @@ EOF_SVC
             echo ""
             echo -e "${CYAN}Доступные конфигурации клиентов:${NC}"
             
-            # Собираем массив файлов из /root (включая 1 уровень вложенности)
+            # Собираем массив файлов из /root (включая 1 уровень вложенности, игнорируя скрытые папки)
             CLIENT_CONFS=()
             while IFS= read -r file; do
                 CLIENT_CONFS+=("$file")
-            done < <(find /root -maxdepth 2 -type f \( -name "*.conf" -o -name "*.yaml" -o -name "*.yml" -o -name "*.json" -o -name "*.txt" \) 2>/dev/null)
+            done < <(find /root -maxdepth 2 -name ".*" -prune -o -type f \( -name "*.conf" -o -name "*.yaml" -o -name "*.yml" -o -name "*.json" -o -name "*.txt" \) -print 2>/dev/null)
 
             if [ ${#CLIENT_CONFS[@]} -eq 0 ]; then
                 echo -e "${RED}Файлы конфигурации клиентов (.conf, .yaml, .txt...) не найдены в /root/${NC}"
