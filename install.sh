@@ -2,17 +2,71 @@
 
 # === НАСТРОЙКИ ===
 INSTALLER_URL="https://raw.githubusercontent.com/NedgNDG/vk-proxy-auto-installer/main/install.sh"
+CONFIG_DIR="/etc/vk-proxy"
+CONFIG_FILE="$CONFIG_DIR/vk-proxy.conf"
+CLIENTS_DIR="/root/vpn-clients"
 
 if [ "$EUID" -ne 0 ]; then
   echo "Пожалуйста, запустите скрипт от имени root (команда: sudo bash)"
   exit 1
 fi
 
+mkdir -p "$CONFIG_DIR" "$CLIENTS_DIR"
+
+# === ФУНКЦИИ КОНФИГУРАЦИИ ===
+get_conf() {
+    if [ -f "$CONFIG_FILE" ]; then
+        grep "^$1=" "$CONFIG_FILE" | cut -d'=' -f2-
+    fi
+}
+
+set_conf() {
+    if [ ! -f "$CONFIG_FILE" ]; then touch "$CONFIG_FILE"; fi
+    if grep -q "^$1=" "$CONFIG_FILE"; then
+        sed -i "s|^$1=.*|$1=$2|" "$CONFIG_FILE"
+    else
+        echo "$1=$2" >> "$CONFIG_FILE"
+    fi
+}
+
+# Миграция со старых файлов и путей на новые (настроек скрипта)
+migrate_configs() {
+    if [ -f /root/.vk-proxy.conf ]; then
+        mv /root/.vk-proxy.conf "$CONFIG_FILE"
+    fi
+    
+    if [ -f /root/.vk-proxy-version ]; then
+        set_conf "VERSION" "$(cat /root/.vk-proxy-version)"
+        set_conf "PROXY_PORT" "$(cat /root/.vk-proxy-port 2>/dev/null || echo 56000)"
+        set_conf "TARGET_PORT" "$(cat /root/.vk-proxy-target-port 2>/dev/null || echo 51820)"
+        set_conf "PROXY_REPO" "$(cat /root/.vk-proxy-repo 2>/dev/null || echo cacggghp/vk-turn-proxy)"
+        set_conf "CORE_TYPE" "$(cat /root/.vk-proxy-core-type 2>/dev/null || echo go)"
+        
+        if [[ "$(cat /root/.vk-proxy-vless 2>/dev/null)" == "1" ]]; then set_conf "VLESS_MODE" "vless"; else set_conf "VLESS_MODE" "off"; fi
+        if [[ "$(cat /root/.vk-proxy-dc-mode 2>/dev/null)" == "1" ]]; then set_conf "DC_MODE" "1"; else set_conf "DC_MODE" "0"; fi
+        
+        set_conf "JAZZ_ROOM" "$(cat /root/.vk-proxy-jazz-room 2>/dev/null)"
+        set_conf "YANDEX_LINK" "$(cat /root/.vk-proxy-yandex-link 2>/dev/null)"
+        set_conf "CUSTOM_ARGS" "$(cat /root/.vk-proxy-custom-args 2>/dev/null)"
+        
+        # Удаляем старые файлы
+        rm -f /root/.vk-proxy-version /root/.vk-proxy-port /root/.vk-proxy-target-port /root/.vk-proxy-repo \
+              /root/.vk-proxy-core-type /root/.vk-proxy-vless /root/.vk-proxy-dc-mode /root/.vk-proxy-jazz-room \
+              /root/.vk-proxy-yandex-link /root/.vk-proxy-custom-args /root/.vk-proxy-yandex-dc
+    fi
+}
+migrate_configs
+
 # === ФУНКЦИЯ СОЗДАНИЯ ПАНЕЛИ ===
 create_panel() {
 cat << 'EOF' > /usr/local/bin/vk-panel
 #!/bin/bash
 INSTALLER_URL="https://raw.githubusercontent.com/NedgNDG/vk-proxy-auto-installer/main/install.sh"
+CONFIG_DIR="/etc/vk-proxy"
+CONFIG_FILE="$CONFIG_DIR/vk-proxy.conf"
+CLIENTS_DIR="/root/vpn-clients"
+
+mkdir -p "$CONFIG_DIR" "$CLIENTS_DIR"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -23,53 +77,32 @@ NC='\033[0m'
 ARCH=$(uname -m)
 if [[ "$ARCH" == "x86_64" ]]; then SYS_ARCH="amd64"; else SYS_ARCH="arm64"; fi
 
-# Принудительно получаем IPv4
 PUBLIC_IP=$(curl -4 -s --connect-timeout 5 ifconfig.me || curl -s --connect-timeout 5 https://api.ipify.org)
 
-if [[ -f /root/.vk-proxy-version ]]; then CURRENT_VERSION=$(cat /root/.vk-proxy-version); else CURRENT_VERSION="Неизвестно"; fi
-if [[ -f /root/.vk-proxy-port ]]; then PROXY_PORT=$(cat /root/.vk-proxy-port); else PROXY_PORT="56000"; fi
+get_conf() { if [ -f "$CONFIG_FILE" ]; then grep "^$1=" "$CONFIG_FILE" | cut -d'=' -f2-; fi }
+set_conf() { if [ ! -f "$CONFIG_FILE" ]; then touch "$CONFIG_FILE"; fi; if grep -q "^$1=" "$CONFIG_FILE"; then sed -i "s|^$1=.*|$1=$2|" "$CONFIG_FILE"; else echo "$1=$2" >> "$CONFIG_FILE"; fi }
 
-# Получаем целевой порт
-if [[ -f /root/.vk-proxy-target-port ]]; then 
-    TARGET_PORT=$(cat /root/.vk-proxy-target-port)
-else 
-    TARGET_PORT=$(grep -oP '(?:-connect |-p )127\.0\.0\.1:\K\d+' /etc/systemd/system/vk-proxy.service | head -1)
-    TARGET_PORT=${TARGET_PORT:-51820}
-    echo "$TARGET_PORT" > /root/.vk-proxy-target-port
-fi
+CURRENT_VERSION=$(get_conf "VERSION")
+CURRENT_VERSION=${CURRENT_VERSION:-"Неизвестно"}
+PROXY_PORT=$(get_conf "PROXY_PORT")
+PROXY_PORT=${PROXY_PORT:-"56000"}
+TARGET_PORT=$(get_conf "TARGET_PORT")
+TARGET_PORT=${TARGET_PORT:-"51820"}
+PROXY_REPO=$(get_conf "PROXY_REPO")
+PROXY_REPO=${PROXY_REPO:-"cacggghp/vk-turn-proxy"}
 
-# Читаем и мигрируем репозиторий
-if [[ -f /root/.vk-proxy-repo ]]; then 
-    PROXY_REPO=$(cat /root/.vk-proxy-repo)
-    if [[ "$PROXY_REPO" != *"/"* ]] && [[ "$PROXY_REPO" != "Прямая ссылка" ]]; then
-        if [[ "$PROXY_REPO" == "Urtyom-Alyanov" ]]; then
-            PROXY_REPO="Urtyom-Alyanov/turn-proxy"
-        else
-            PROXY_REPO="${PROXY_REPO}/vk-turn-proxy"
-        fi
-        echo "$PROXY_REPO" > /root/.vk-proxy-repo
-    fi
-    # Миграция alexmac6574 -> alxmcp
-    if [[ "$PROXY_REPO" == "alexmac6574/vk-turn-proxy" ]]; then
-        PROXY_REPO="alxmcp/vk-turn-proxy"
-        echo "$PROXY_REPO" > /root/.vk-proxy-repo
-    fi
-else 
-    PROXY_REPO="cacggghp/vk-turn-proxy"
+# Миграция репозитория
+if [[ "$PROXY_REPO" != *"/"* ]] && [[ "$PROXY_REPO" != "Прямая ссылка" ]]; then
+    if [[ "$PROXY_REPO" == "Urtyom-Alyanov" ]]; then PROXY_REPO="Urtyom-Alyanov/turn-proxy"; else PROXY_REPO="${PROXY_REPO}/vk-turn-proxy"; fi
+    set_conf "PROXY_REPO" "$PROXY_REPO"
 fi
-
-# Автоматическая миграция со старого флага -telemost-dc на новый -dc
-if [[ -f /root/.vk-proxy-yandex-dc ]]; then
-    mv /root/.vk-proxy-yandex-dc /root/.vk-proxy-dc-mode
-    MIGRATION_NEEDED=1
-fi
+if [[ "$PROXY_REPO" == "alexmac6574/vk-turn-proxy" ]]; then PROXY_REPO="alxmcp/vk-turn-proxy"; set_conf "PROXY_REPO" "$PROXY_REPO"; fi
 
 get_download_url() {
     local api_resp="$1"
     local arch="$2"
     local repo="$3"
     local url=""
-    
     if [[ "$repo" == *"Urtyom-Alyanov"* ]]; then
         url=$(echo "$api_resp" | jq -r '.assets[] | select(.name == "turn-proxy-server") | .browser_download_url' | head -n 1)
     else
@@ -80,45 +113,50 @@ get_download_url() {
 
 get_exec_args() {
     local FINAL_ARGS=""
-    if [[ -f /root/.vk-proxy-custom-args ]] && [[ -n "$(cat /root/.vk-proxy-custom-args)" ]]; then
-        FINAL_ARGS=$(cat /root/.vk-proxy-custom-args)
+    local CUSTOM_ARGS=$(get_conf "CUSTOM_ARGS")
+    
+    if [[ -n "$CUSTOM_ARGS" ]]; then
+        FINAL_ARGS="$CUSTOM_ARGS"
     else
         local VLESS_FLAG=""
         local DC_FLAG=""
+        local WRAP_FLAG=""
         
-        if [[ -f /root/.vk-proxy-vless ]] && [[ "$(cat /root/.vk-proxy-vless)" == "1" ]]; then 
-            VLESS_FLAG=" -vless"
+        local VLESS_MODE=$(get_conf "VLESS_MODE")
+        if [[ "$VLESS_MODE" == "vless" ]]; then VLESS_FLAG=" -vless"
+        elif [[ "$VLESS_MODE" == "vless-bond" ]]; then VLESS_FLAG=" -vless-bond"
         fi
         
-        if [[ -f /root/.vk-proxy-dc-mode ]] && [[ "$(cat /root/.vk-proxy-dc-mode)" == "1" ]]; then
-            if [[ -f /root/.vk-proxy-jazz-room ]]; then
-                local JAZZ_ROOM=$(cat /root/.vk-proxy-jazz-room)
-                DC_FLAG=" -jazz-room $JAZZ_ROOM -dc"
-            elif [[ -f /root/.vk-proxy-yandex-link ]]; then
-                local LINK=$(cat /root/.vk-proxy-yandex-link)
-                DC_FLAG=" -yandex-link $LINK -dc"
+        if [[ "$(get_conf "DC_MODE")" == "1" ]]; then
+            local JAZZ_ROOM=$(get_conf "JAZZ_ROOM")
+            local LINK=$(get_conf "YANDEX_LINK")
+            if [[ -n "$JAZZ_ROOM" ]]; then DC_FLAG=" -jazz-room $JAZZ_ROOM -dc"
+            elif [[ -n "$LINK" ]]; then DC_FLAG=" -yandex-link $LINK -dc"
             fi
         fi
 
-        local CORE_TYPE="go"
-        if [[ -f /root/.vk-proxy-core-type ]]; then
-            CORE_TYPE=$(cat /root/.vk-proxy-core-type)
-        elif [[ "$PROXY_REPO" == *"Urtyom-Alyanov"* ]]; then
-            CORE_TYPE="rust"
+        if [[ "$(get_conf "WRAP_ENABLED")" == "1" ]]; then
+            WRAP_FLAG=" -wrap"
+            local WRAP_KEY=$(get_conf "WRAP_KEY")
+            if [[ -n "$WRAP_KEY" ]]; then
+                WRAP_FLAG="$WRAP_FLAG -wrap-key $WRAP_KEY"
+            fi
         fi
 
+        local CORE_TYPE=$(get_conf "CORE_TYPE")
+        CORE_TYPE=${CORE_TYPE:-"go"}
+
         if [[ "$CORE_TYPE" == "rust" ]]; then
-            FINAL_ARGS="-N -l 0.0.0.0:$PROXY_PORT -p 127.0.0.1:$TARGET_PORT -n 10000$DC_FLAG$VLESS_FLAG"
+            FINAL_ARGS="-N -l 0.0.0.0:$PROXY_PORT -p 127.0.0.1:$TARGET_PORT -n 10000$DC_FLAG$VLESS_FLAG$WRAP_FLAG"
         else
-            FINAL_ARGS="-listen 0.0.0.0:$PROXY_PORT -connect 127.0.0.1:$TARGET_PORT$DC_FLAG$VLESS_FLAG"
+            FINAL_ARGS="-listen 0.0.0.0:$PROXY_PORT -connect 127.0.0.1:$TARGET_PORT$DC_FLAG$VLESS_FLAG$WRAP_FLAG"
         fi
     fi
     echo "$FINAL_ARGS"
 }
 
-# Применяем миграцию, если это необходимо
-if [[ "$MIGRATION_NEEDED" == "1" ]]; then
-    EXEC_ARGS=$(get_exec_args)
+apply_and_restart_service() {
+    local EXEC_ARGS=$(get_exec_args)
 cat <<EOF_SVC > /etc/systemd/system/vk-proxy.service
 [Unit]
 Description=VK TURN Proxy Service
@@ -138,25 +176,38 @@ WantedBy=multi-user.target
 EOF_SVC
     systemctl daemon-reload
     if systemctl is-active --quiet vk-proxy; then systemctl restart vk-proxy; fi
-fi
+}
+
+check_bbr_status() {
+    if command -v sysctl &> /dev/null; then
+        local bbr_status=$(sysctl net.ipv4.tcp_congestion_control 2>/dev/null | awk '{print $3}')
+        if [[ "$bbr_status" == "bbr" ]]; then
+            echo -e "${GREEN}Включен${NC}"
+        else
+            echo -e "${RED}Выключен${NC}"
+        fi
+    else
+        echo -e "${YELLOW}Неизвестно${NC}"
+    fi
+}
 
 while true; do
     clear
     
     TARGET_SERVICE="Введен вручную / Неизвестен"
     shopt -s nullglob
-    for conf in /etc/hysteria/*.yaml /etc/hysteria/*.json; do
+    for conf in /etc/hysteria/*.yaml /etc/hysteria/*.json "$CLIENTS_DIR"/*.yaml "$CLIENTS_DIR"/*.json; do
         port=$(grep -i -oP -m 1 '^listen:\s*(?:.*:)?\K\d+' "$conf" 2>/dev/null)
         if [[ "$port" == "$TARGET_PORT" ]]; then TARGET_SERVICE="Hysteria2"; break; fi
     done
     if [[ "$TARGET_SERVICE" == "Введен вручную / Неизвестен" ]]; then
-        for conf in /etc/amneziawg/*.conf /etc/amnezia/amneziawg/*.conf; do
+        for conf in /etc/amneziawg/*.conf /etc/amnezia/amneziawg/*.conf "$CLIENTS_DIR"/*.conf; do
             port=$(grep -oP -m 1 'ListenPort\s*=\s*\K\d+' "$conf" 2>/dev/null)
             if [[ "$port" == "$TARGET_PORT" ]]; then TARGET_SERVICE="AmneziaWG"; break; fi
         done
     fi
     if [[ "$TARGET_SERVICE" == "Введен вручную / Неизвестен" ]]; then
-        for conf in /etc/wireguard/*.conf; do
+        for conf in /etc/wireguard/*.conf "$CLIENTS_DIR"/*.conf; do
             port=$(grep -oP -m 1 'ListenPort\s*=\s*\K\d+' "$conf" 2>/dev/null)
             if [[ "$port" == "$TARGET_PORT" ]]; then TARGET_SERVICE="WireGuard"; break; fi
         done
@@ -164,25 +215,32 @@ while true; do
     shopt -u nullglob
 
     if systemctl is-active --quiet vk-proxy; then PROXY_STATE="${GREEN}Активен${NC}"; else PROXY_STATE="${RED}Остановлен${NC}"; fi
-    if [[ -f /root/.vk-proxy-vless ]] && [[ "$(cat /root/.vk-proxy-vless)" == "1" ]]; then VLESS_TEXT="${GREEN}Включен${NC}"; else VLESS_TEXT="${RED}Выключен${NC}"; fi
-    if [[ -f /root/.vk-proxy-dc-mode ]] && [[ "$(cat /root/.vk-proxy-dc-mode)" == "1" ]]; then DC_TEXT="${GREEN}Включен${NC}"; else DC_TEXT="${RED}Выключен${NC}"; fi
     
-    if [[ -f /root/.vk-proxy-custom-args ]] && [[ -n "$(cat /root/.vk-proxy-custom-args)" ]]; then
-        MODE_TEXT="${YELLOW}Кастомные аргументы (Raw)${NC}"
-    else
-        MODE_TEXT="${GREEN}Автоматический${NC}"
-    fi
+    VLESS_MODE=$(get_conf "VLESS_MODE")
+    if [[ "$VLESS_MODE" == "vless" ]]; then VLESS_TEXT="${GREEN}Включен (-vless)${NC}"
+    elif [[ "$VLESS_MODE" == "vless-bond" ]]; then VLESS_TEXT="${GREEN}Включен (-vless-bond)${NC}"
+    else VLESS_TEXT="${RED}Выключен${NC}"; fi
+
+    if [[ "$(get_conf "DC_MODE")" == "1" ]]; then DC_TEXT="${GREEN}Включен${NC}"; else DC_TEXT="${RED}Выключен${NC}"; fi
+    if [[ "$(get_conf "WRAP_ENABLED")" == "1" ]]; then WRAP_TEXT="${GREEN}Включен${NC}"; else WRAP_TEXT="${RED}Выключен${NC}"; fi
+
+    if [[ -n "$(get_conf "CUSTOM_ARGS")" ]]; then MODE_TEXT="${YELLOW}Кастомные аргументы (Raw)${NC}"
+    else MODE_TEXT="${GREEN}Автоматический${NC}"; fi
+    
+    BBR_TEXT=$(check_bbr_status)
 
 	echo "========================================================================="
-    echo -e "${CYAN}                       VK TURN Proxy Manager v1.9b                       ${NC}"
+    echo -e "${CYAN}                       VK TURN Proxy Manager v2.0                        ${NC}"
     echo "========================================================================="
     echo -e " 🟢 Статус:      ${PROXY_STATE}"
     echo -e " 📦 Версия:      ${YELLOW}${CURRENT_VERSION}${NC} (Ядро: ${CYAN}${PROXY_REPO}${NC})"
     echo -e " ⚙️  Режим:       ${MODE_TEXT}"
     echo -e " 🛡️  VLESS:       ${VLESS_TEXT}  |  📞 DataChannel: ${DC_TEXT}"
+    echo -e " ☁️  WRAP:        ${WRAP_TEXT}  |  🚀 TCP BBR: ${BBR_TEXT}"
     echo "-------------------------------------------------------------------------"
     echo -e " 🌐 Внешний:     ${PUBLIC_IP}:${PROXY_PORT}"
     echo -e " 🎯 Назначение:  127.0.0.1:${TARGET_PORT} [${YELLOW}${TARGET_SERVICE}${NC}]"
+    echo -e " 📁 Директория клиентов: ${YELLOW}${CLIENTS_DIR}${NC}"
     echo "========================================================================="
     echo -e "${YELLOW}--- Управление Proxy ---${NC}"
     echo "  1. 🟢 Запустить прокси"
@@ -194,17 +252,20 @@ while true; do
     echo ""
     echo -e "${YELLOW}--- Настройки ---${NC}"
     echo "  7. 🔌 Изменить порты (Внешний / Локальный)"
-    echo "  8. 🛡️ Включить/Выключить флаг '-vless'"
+    echo "  8. 🛡️ Настройка VLESS (-vless / -vless-bond)"
     echo "  9. 📞 Включить/Выключить режим 'DataChannel (SaluteJazz / Yandex)'"
-    echo " 10. ✍️ Задать кастомные аргументы запуска (Raw command)"
+    echo " 10. ☁️ Настройка WRAP (Обфускация / Управление ключом)"
+    echo " 11. ✍️ Задать кастомные аргументы запуска (Raw command)"
     echo ""
     echo -e "${YELLOW}--- VPN и Клиенты ---${NC}"
-    echo " 11. ➕ Установка/Управление VPN (WG / AmneziaWG / Hysteria2)"
-    echo " 12. 📱 Показать QR-код существующего клиента"
+    echo " 12. ➕ Установка/Управление VPN (WG / AmneziaWG / Hysteria2)"
+    echo " 13. 📱 Показать QR-код существующего клиента"
     echo ""
     echo -e "${YELLOW}--- Система ---${NC}"
-    echo " 13. 📊 Посмотреть логи"
-    echo " 14. ⚙️ Обновить панель"
+    echo " 14. 🚀 Включить TCP BBR (Оптимизация скорости сети)"
+    echo " 15. 💾 Создать Backup (Резервная копия настроек и клиентов)"
+    echo " 16. 📊 Посмотреть логи"
+    echo " 17. ⚙️ Обновить панель"
     echo "  0. ❌ Выйти"
     echo "========================================================================="
     read -p "Выбери действие: " choice
@@ -214,13 +275,11 @@ while true; do
     case $choice in
         1) systemctl start vk-proxy; echo -e "${GREEN}Запущено!${NC}"; sleep 1 ;;
         2) systemctl stop vk-proxy; echo -e "${RED}Остановлено!${NC}"; sleep 1 ;;
-        3) if systemctl restart vk-proxy; then echo -e "${GREEN}Успешно перезапущено!${NC}"; else echo -e "${RED}Ошибка перезапуска! Проверьте логи (Пункт 13).${NC}"; fi; sleep 2 ;;
+        3) if systemctl restart vk-proxy; then echo -e "${GREEN}Успешно перезапущено!${NC}"; else echo -e "${RED}Ошибка перезапуска! Проверьте логи.${NC}"; fi; sleep 2 ;;
         4)
             if [[ "$PROXY_REPO" == "Прямая ссылка" || "$PROXY_REPO" == "Custom_Direct_Link" ]]; then
                 echo -e "${YELLOW}Ядро установлено по прямой ссылке. Автоматическое обновление через API недоступно.${NC}"
-                echo "Для обновления используйте пункт 5 (Сменить реализацию) и вставьте новую прямую ссылку."
-                read -n 1 -s -r -p "Нажми любую клавишу..."
-                continue
+                read -n 1 -s -r -p "Нажми любую клавишу..."; continue
             fi
             
             echo "Проверка обновлений через GitHub API ($PROXY_REPO)..."
@@ -238,37 +297,14 @@ while true; do
                 read -p "Хотите обновить? [y/N]: " confirm
                 if [[ "$confirm" =~ ^[Yy]$ ]]; then
                     DOWNLOAD_URL=$(get_download_url "$API_RESP" "$SYS_ARCH" "$PROXY_REPO")
-                    if [[ "$DOWNLOAD_URL" == "null" || -z "$DOWNLOAD_URL" ]]; then
-                        echo -e "${RED}Ошибка получения ссылки на скачивание. Отмена.${NC}"
-                    else
+                    if [[ "$DOWNLOAD_URL" != "null" && -n "$DOWNLOAD_URL" ]]; then
                         echo "Скачивание обновления..."
                         if wget -q --show-progress -O /tmp/server-linux-$SYS_ARCH "$DOWNLOAD_URL"; then
                             systemctl stop vk-proxy
                             mv /tmp/server-linux-$SYS_ARCH /root/server-linux-$SYS_ARCH
                             chmod +x /root/server-linux-$SYS_ARCH
-                            
-                            EXEC_ARGS=$(get_exec_args)
-cat <<EOF_SVC > /etc/systemd/system/vk-proxy.service
-[Unit]
-Description=VK TURN Proxy Service
-After=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/root
-LimitNOFILE=1048576
-ExecStart=/root/server-linux-$SYS_ARCH $EXEC_ARGS
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-EOF_SVC
-                            systemctl daemon-reload
-                            
-                            echo "$LATEST_TAG" > /root/.vk-proxy-version
-                            systemctl start vk-proxy
+                            apply_and_restart_service
+                            set_conf "VERSION" "$LATEST_TAG"
                             CURRENT_VERSION=$LATEST_TAG
                             echo -e "${GREEN}Успешно обновлено до $LATEST_TAG!${NC}"
                         else
@@ -279,11 +315,7 @@ EOF_SVC
             fi
             read -n 1 -s -r -p "Нажми любую клавишу..." ;;
         5)
-            echo -e "${YELLOW}======================================================${NC}"
-            echo -e "${YELLOW}ВНИМАНИЕ: При смене реализации ваши текущие клиенты   ${NC}"
-            echo -e "${YELLOW}могут перестать подключаться! Возможно, потребуется   ${NC}"
-            echo -e "${YELLOW}перенастройка на стороне клиента или его смена.       ${NC}"
-            echo -e "${YELLOW}======================================================${NC}"
+            echo -e "${YELLOW}ВНИМАНИЕ: При смене реализации клиенты могут перестать подключаться!${NC}"
             echo -e "Текущая реализация: ${CYAN}${PROXY_REPO}${NC}"
             echo "Доступные реализации:"
             echo -e "1) cacggghp/vk-turn-proxy (Оригинал)"
@@ -292,7 +324,7 @@ EOF_SVC
             echo -e "4) Moroka8/vk-turn-proxy (Форк)"
             echo -e "5) alxmcp/vk-turn-proxy (Форк, \e[9mподдержка Yandex / SaluteJazz\e[0m)"
             echo -e "6) samosvalishe/vk-turn-proxy (Форк)"
-            echo -e "7) Сторонний репозиторий GitHub ИЛИ прямая ссылка на бинарник"
+            echo -e "7) Сторонний репозиторий GitHub ИЛИ прямая ссылка"
             echo "0) Отмена"
             read -p "Выберите новую реализацию [1-7 или 0]: " repo_choice
             
@@ -304,525 +336,279 @@ EOF_SVC
                 5) NEW_REPO="alxmcp/vk-turn-proxy"; NEW_CORE_TYPE="go" ;;
                 6) NEW_REPO="samosvalishe/vk-turn-proxy"; NEW_CORE_TYPE="go" ;;
                 7)
-                    read -p "Введи репозиторий (owner/repo) ИЛИ прямую ссылку на бинарный файл: " custom_input
+                    read -p "Введи репозиторий (owner/repo) ИЛИ прямую ссылку: " custom_input
                     if [[ "$custom_input" =~ ^https?:// ]] && [[ ! "$custom_input" =~ ^https?://(www\.)?github\.com/[^/]+/[^/]+/?$ ]]; then
                         NEW_REPO="Custom_Direct_Link"
                         DOWNLOAD_URL="$custom_input"
                         LATEST_TAG="Custom"
                     else
                         NEW_REPO=$(echo "$custom_input" | sed -E 's|^https?://github\.com/||' | sed 's/\.git$//' | awk -F/ '{print $1"/"$2}')
-                        if [[ -z "$NEW_REPO" || "$NEW_REPO" != *"/"* || "$NEW_REPO" == "/" ]]; then
-                            echo -e "${RED}Неверный формат.${NC}"
-                            sleep 1; continue
-                        fi
+                        if [[ -z "$NEW_REPO" || "$NEW_REPO" != *"/"* || "$NEW_REPO" == "/" ]]; then echo -e "${RED}Неверный формат.${NC}"; sleep 1; continue; fi
                     fi
-                    
-                    echo -e "\n${CYAN}Какой тип аргументов использовать для этого кастомного ядра?${NC}"
-                    echo "1) Стандартные (Go: -listen 0.0.0.0:PORT -connect 127.0.0.1:PORT)"
-                    echo "2) Rust (Urtyom-Alyanov: -N -l 0.0.0.0:PORT -p 127.0.0.1:PORT)"
+                    echo -e "\n${CYAN}Какой тип аргументов использовать?${NC}"
+                    echo "1) Стандартные (Go)"
+                    echo "2) Rust"
                     echo "3) Задать вручную (Raw command)"
                     read -p "Твой выбор [1-3]: " custom_core_type
-                    if [[ "$custom_core_type" == "2" ]]; then
-                        NEW_CORE_TYPE="rust"
-                    elif [[ "$custom_core_type" == "3" ]]; then
-                        NEW_CORE_TYPE="custom"
-                    else
-                        NEW_CORE_TYPE="go"
-                    fi
+                    if [[ "$custom_core_type" == "2" ]]; then NEW_CORE_TYPE="rust"
+                    elif [[ "$custom_core_type" == "3" ]]; then NEW_CORE_TYPE="custom"
+                    else NEW_CORE_TYPE="go"; fi
                     ;;
                 0) continue ;;
                 *) echo -e "${RED}Неверный выбор.${NC}"; sleep 1; continue ;;
             esac
             
-            if [[ "$NEW_REPO" == "$PROXY_REPO" ]]; then
-                echo -e "${YELLOW}Эта реализация уже установлена!${NC}"; sleep 1; continue
-            fi
+            if [[ "$NEW_REPO" == "$PROXY_REPO" ]]; then echo -e "${YELLOW}Эта реализация уже установлена!${NC}"; sleep 1; continue; fi
             
-            read -p "Вы уверены, что хотите сменить ядро? [y/N]: " confirm_switch
+            read -p "Сменить ядро? [y/N]: " confirm_switch
             if [[ "$confirm_switch" =~ ^[Yy]$ ]]; then
-                
                 if [[ "$NEW_REPO" == "Custom_Direct_Link" ]]; then
-                    echo "Скачивание ядра по прямой ссылке..."
+                    echo "Скачивание по прямой ссылке..."
                     if wget -q --show-progress -O /tmp/server-linux-$SYS_ARCH "$DOWNLOAD_URL"; then
                         systemctl stop vk-proxy
                         mv /tmp/server-linux-$SYS_ARCH /root/server-linux-$SYS_ARCH
                         chmod +x /root/server-linux-$SYS_ARCH
-                        
                         PROXY_REPO="Прямая ссылка"
-                        
-                        echo "$NEW_CORE_TYPE" > /root/.vk-proxy-core-type
+                        set_conf "CORE_TYPE" "$NEW_CORE_TYPE"
                         if [[ "$NEW_CORE_TYPE" == "custom" ]]; then
-                            echo -e "\nВведи кастомные аргументы (например: -listen 0.0.0.0:$PROXY_PORT -connect 127.0.0.1:$TARGET_PORT -vless)"
-                            read -p "Аргументы: " manual_custom_args
-                            echo "$manual_custom_args" > /root/.vk-proxy-custom-args
-                        else
-                            rm -f /root/.vk-proxy-custom-args
-                        fi
-                        
-                        EXEC_ARGS=$(get_exec_args)
-
-cat <<EOF_SVC > /etc/systemd/system/vk-proxy.service
-[Unit]
-Description=VK TURN Proxy Service
-After=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/root
-LimitNOFILE=1048576
-ExecStart=/root/server-linux-$SYS_ARCH $EXEC_ARGS
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-EOF_SVC
-                        systemctl daemon-reload
-                        
-                        echo "Прямая ссылка" > /root/.vk-proxy-repo
-                        echo "Custom" > /root/.vk-proxy-version
-                        systemctl start vk-proxy
+                            read -p "Введи аргументы вручную: " manual_custom_args
+                            set_conf "CUSTOM_ARGS" "$manual_custom_args"
+                        else set_conf "CUSTOM_ARGS" ""; fi
+                        apply_and_restart_service
+                        set_conf "PROXY_REPO" "Прямая ссылка"
+                        set_conf "VERSION" "Custom"
                         CURRENT_VERSION="Custom"
-                        echo -e "${GREEN}Успешно обновлено по прямой ссылке!${NC}"
-                    else
-                        echo -e "${RED}Ошибка скачивания по прямой ссылке. Отмена.${NC}"
+                        echo -e "${GREEN}Обновлено!${NC}"
                     fi
                 else
-                    echo "Получение данных с GitHub ($NEW_REPO)..."
                     NEW_API_URL="https://api.github.com/repos/${NEW_REPO}/releases/latest"
                     API_RESP=$(curl -s --connect-timeout 10 "$NEW_API_URL")
                     LATEST_TAG=$(echo "$API_RESP" | jq -r ".tag_name")
-                    
-                    if [[ "$LATEST_TAG" == "null" || -z "$LATEST_TAG" ]]; then
-                        echo -e "${RED}Ошибка API GitHub (возможно исчерпан лимит или нет релизов). Отмена.${NC}"
-                    else
+                    if [[ "$LATEST_TAG" != "null" && -n "$LATEST_TAG" ]]; then
                         DOWNLOAD_URL=$(get_download_url "$API_RESP" "$SYS_ARCH" "$NEW_REPO")
-                        if [[ "$DOWNLOAD_URL" == "null" || -z "$DOWNLOAD_URL" ]]; then
-                            echo -e "${RED}Ошибка получения релиза $NEW_REPO. Возможно бинарник не опубликован. Отмена.${NC}"
-                        else
-                            echo "Скачивание ядра..."
-                            if wget -q --show-progress -O /tmp/server-linux-$SYS_ARCH "$DOWNLOAD_URL"; then
-                                systemctl stop vk-proxy
-                                mv /tmp/server-linux-$SYS_ARCH /root/server-linux-$SYS_ARCH
-                                chmod +x /root/server-linux-$SYS_ARCH
-                                
-                                PROXY_REPO=$NEW_REPO
-                                
-                                echo "$NEW_CORE_TYPE" > /root/.vk-proxy-core-type
-                                if [[ "$NEW_CORE_TYPE" == "custom" ]]; then
-                                    echo -e "\nВведи кастомные аргументы (например: -listen 0.0.0.0:$PROXY_PORT -connect 127.0.0.1:$TARGET_PORT -vless)"
-                                    read -p "Аргументы: " manual_custom_args
-                                    echo "$manual_custom_args" > /root/.vk-proxy-custom-args
-                                else
-                                    rm -f /root/.vk-proxy-custom-args
-                                fi
-                                
-                                EXEC_ARGS=$(get_exec_args)
-
-cat <<EOF_SVC > /etc/systemd/system/vk-proxy.service
-[Unit]
-Description=VK TURN Proxy Service
-After=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/root
-LimitNOFILE=1048576
-ExecStart=/root/server-linux-$SYS_ARCH $EXEC_ARGS
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-EOF_SVC
-                                systemctl daemon-reload
-                                
-                                echo "$NEW_REPO" > /root/.vk-proxy-repo
-                                echo "$LATEST_TAG" > /root/.vk-proxy-version
-                                systemctl start vk-proxy
-                                CURRENT_VERSION=$LATEST_TAG
-                                echo -e "${GREEN}Успешно изменено на реализацию $NEW_REPO ($LATEST_TAG)!${NC}"
-                            else
-                                echo -e "${RED}Ошибка скачивания ядра. Отмена.${NC}"
-                            fi
+                        if wget -q --show-progress -O /tmp/server-linux-$SYS_ARCH "$DOWNLOAD_URL"; then
+                            systemctl stop vk-proxy
+                            mv /tmp/server-linux-$SYS_ARCH /root/server-linux-$SYS_ARCH
+                            chmod +x /root/server-linux-$SYS_ARCH
+                            PROXY_REPO=$NEW_REPO
+                            set_conf "CORE_TYPE" "$NEW_CORE_TYPE"
+                            if [[ "$NEW_CORE_TYPE" == "custom" ]]; then
+                                read -p "Введи аргументы вручную: " manual_custom_args
+                                set_conf "CUSTOM_ARGS" "$manual_custom_args"
+                            else set_conf "CUSTOM_ARGS" ""; fi
+                            apply_and_restart_service
+                            set_conf "PROXY_REPO" "$NEW_REPO"
+                            set_conf "VERSION" "$LATEST_TAG"
+                            CURRENT_VERSION=$LATEST_TAG
+                            echo -e "${GREEN}Обновлено!${NC}"
                         fi
                     fi
                 fi
             fi
-            read -n 1 -s -r -p "Нажми любую клавишу..."
-            ;;
+            read -n 1 -s -r -p "Нажми любую клавишу..." ;;
         6)
-            echo -e "${RED}ВНИМАНИЕ: Это удалит службу и бинарник прокси! Остальные VPN (WG, AmneziaWG, Hysteria2) останутся нетронутыми.${NC}"
+            echo -e "${RED}ВНИМАНИЕ: Это удалит службу, бинарник прокси и его настройки! VPN останутся нетронутыми.${NC}"
             read -p "Вы АБСОЛЮТНО уверены? [y/N]: " confirm
             if [[ "$confirm" =~ ^[Yy]$ ]]; then
                 systemctl stop vk-proxy; systemctl disable vk-proxy; rm -f /etc/systemd/system/vk-proxy.service; systemctl daemon-reload
                 if command -v ufw &> /dev/null; then ufw delete allow $PROXY_PORT/tcp >/dev/null 2>&1; ufw delete allow $PROXY_PORT/udp >/dev/null 2>&1; fi
-                rm -f /root/server-linux-$SYS_ARCH /root/.vk-proxy-version /usr/local/bin/vk-panel /root/.vk-proxy-repo /root/.vk-proxy-core-type /root/.vk-proxy-port /root/.vk-proxy-target-port /root/.vk-proxy-vless /root/.vk-proxy-custom-args /root/.vk-proxy-yandex-link /root/.vk-proxy-dc-mode /root/.vk-proxy-jazz-room /root/.vk-proxy-yandex-dc
-                echo -e "${GREEN}Прокси успешно удален.${NC}"; exit 0
+                rm -f /root/server-linux-$SYS_ARCH /usr/local/bin/vk-panel
+                rm -rf "$CONFIG_DIR"
+                echo -e "${GREEN}Прокси удален.${NC}"; exit 0
             fi ;;
         7)
-            echo ""
-            if [[ -f /root/.vk-proxy-custom-args ]] && [[ -n "$(cat /root/.vk-proxy-custom-args)" ]]; then
-                echo -e "${YELLOW}⚠️ ВНИМАНИЕ: У вас активны кастомные аргументы запуска!${NC}"
-                echo -e "Изменения портов сохранятся, но ${RED}НЕ ПРИМЕНЯТСЯ${NC} к службе, пока вы не сбросите кастомные настройки (пункт 10)."
-                echo ""
-            fi
-            
             echo -e "${CYAN}Изменение портов:${NC}"
-            echo "1) Изменить внешний порт прокси (сейчас: $PROXY_PORT)"
-            echo "2) Изменить локальный порт назначения (сейчас: $TARGET_PORT)"
+            echo "1) Внешний порт прокси (сейчас: $PROXY_PORT)"
+            echo "2) Локальный порт назначения (сейчас: $TARGET_PORT)"
             echo "0) Отмена"
-            read -p "Что будем менять? [1, 2 или 0]: " port_change_choice
-
+            read -p "Что меняем? [1, 2 или 0]: " port_change_choice
             if [[ "$port_change_choice" == "1" ]]; then
-                read -p "Введи новый внешний порт (от 1 до 65535): " NEW_PROXY_PORT
-                if [[ "$NEW_PROXY_PORT" =~ ^[0-9]+$ ]] && [ "$NEW_PROXY_PORT" -ge 1 ] && [ "$NEW_PROXY_PORT" -le 65535 ]; then
-                    if command -v ss &> /dev/null && ss -tuln | grep -qE ":$NEW_PROXY_PORT\b"; then
-                        echo -e "${RED}⚠️ Ошибка: Порт $NEW_PROXY_PORT уже занят. Выбери другой.${NC}"
-                    else
-                        if command -v ufw &> /dev/null; then
-                            echo "Обновление правил UFW..."
-                            ufw delete allow $PROXY_PORT/tcp >/dev/null 2>&1
-                            ufw delete allow $PROXY_PORT/udp >/dev/null 2>&1
-                            ufw allow $NEW_PROXY_PORT/tcp >/dev/null 2>&1
-                            ufw allow $NEW_PROXY_PORT/udp >/dev/null 2>&1
-                        fi
-                        echo "$NEW_PROXY_PORT" > /root/.vk-proxy-port
-                        PROXY_PORT="$NEW_PROXY_PORT"
-                        echo -e "${GREEN}Внешний порт изменен на $PROXY_PORT!${NC}"
+                read -p "Введи новый порт (1-65535): " NEW_PROXY_PORT
+                if [[ "$NEW_PROXY_PORT" =~ ^[0-9]+$ ]]; then
+                    if command -v ufw &> /dev/null; then
+                        ufw delete allow $PROXY_PORT/tcp >/dev/null 2>&1; ufw delete allow $PROXY_PORT/udp >/dev/null 2>&1
+                        ufw allow $NEW_PROXY_PORT/tcp >/dev/null 2>&1; ufw allow $NEW_PROXY_PORT/udp >/dev/null 2>&1
                     fi
-                else
-                    echo -e "${RED}Неверный формат порта.${NC}"
+                    set_conf "PROXY_PORT" "$NEW_PROXY_PORT"; PROXY_PORT="$NEW_PROXY_PORT"
+                    echo -e "${GREEN}Изменено!${NC}"
                 fi
-
             elif [[ "$port_change_choice" == "2" ]]; then
-                echo ""
-                echo "Как задать новый локальный порт?"
                 echo "1) Ввести вручную"
-                echo "2) Найти автоматически в установленных конфигурациях VPN (WG/AWG/Hysteria2)"
-                read -p "Твой выбор: " target_port_method
-
-                NEW_TARGET_PORT=""
-
+                echo "2) Найти автоматически (WG/AmneziaWG/Hysteria2)"
+                read -p "Выбор: " target_port_method
                 if [[ "$target_port_method" == "1" ]]; then
-                    read -p "Введи новый локальный порт (например, 51820 или 443): " input_target_port
-                    if [[ "$input_target_port" =~ ^[0-9]+$ ]] && [ "$input_target_port" -ge 1 ] && [ "$input_target_port" -le 65535 ]; then
-                        NEW_TARGET_PORT="$input_target_port"
-                    else
-                        echo -e "${RED}Неверный формат порта.${NC}"
-                    fi
+                    read -p "Локальный порт: " NEW_TARGET_PORT
                 elif [[ "$target_port_method" == "2" ]]; then
                     shopt -s nullglob
-                    ALL_CONFS=(/etc/wireguard/*.conf /etc/amneziawg/*.conf /etc/amnezia/amneziawg/*.conf /etc/hysteria/*.yaml /etc/hysteria/*.json)
+                    ALL_CONFS=(/etc/wireguard/*.conf /etc/amneziawg/*.conf /etc/amnezia/amneziawg/*.conf /etc/hysteria/*.yaml /etc/hysteria/*.json "$CLIENTS_DIR"/*.conf "$CLIENTS_DIR"/*.yaml "$CLIENTS_DIR"/*.json)
                     shopt -u nullglob
-
-                    if [ ${#ALL_CONFS[@]} -eq 0 ]; then
-                        echo -e "${RED}Файлы конфигураций VPN не найдены на сервере.${NC}"
-                    else
-                        echo -e "${YELLOW}Найдены следующие конфигурации:${NC}"
+                    if [ ${#ALL_CONFS[@]} -gt 0 ]; then
                         for i in "${!ALL_CONFS[@]}"; do
                             port=$(grep -i -oP -m 1 '(ListenPort\s*=\s*|^listen:\s*(?:.*:)?)\K\d+' "${ALL_CONFS[$i]}")
-                            echo "$((i+1)). ${ALL_CONFS[$i]} (Найденный порт: ${port:-не обнаружен})"
+                            echo "$((i+1)). ${ALL_CONFS[$i]} (Порт: ${port:-не найден})"
                         done
-                        echo ""
-                        read -p "Выбери номер конфигурации для привязки: " conf_choice
+                        read -p "Номер конфигурации: " conf_choice
                         if [[ "$conf_choice" -ge 1 && "$conf_choice" -le ${#ALL_CONFS[@]} ]]; then
                             NEW_TARGET_PORT=$(grep -i -oP -m 1 '(ListenPort\s*=\s*|^listen:\s*(?:.*:)?)\K\d+' "${ALL_CONFS[$((conf_choice-1))]}")
-                            if [[ -z "$NEW_TARGET_PORT" ]]; then
-                                echo -e "${RED}В выбранном файле не найден порт.${NC}"
-                            fi
-                        else
-                            echo -e "${RED}Неверный выбор.${NC}"
                         fi
+                    else
+                        echo -e "${RED}Файлы конфигураций не найдены.${NC}"
+                    fi
+                    
+                    if [[ -z "$NEW_TARGET_PORT" ]]; then
+                        echo -e "${YELLOW}Не удалось определить порт из файла.${NC}"
+                        read -p "Введи порт вручную: " NEW_TARGET_PORT
                     fi
                 fi
-
-                if [[ -n "$NEW_TARGET_PORT" ]]; then
-                    echo "$NEW_TARGET_PORT" > /root/.vk-proxy-target-port
-                    TARGET_PORT="$NEW_TARGET_PORT"
-                    echo -e "${GREEN}Локальный порт изменен на $TARGET_PORT!${NC}"
-                fi
+                if [[ -n "$NEW_TARGET_PORT" ]]; then set_conf "TARGET_PORT" "$NEW_TARGET_PORT"; TARGET_PORT="$NEW_TARGET_PORT"; echo -e "${GREEN}Изменено!${NC}"; fi
             fi
-
-            if [[ "$port_change_choice" == "1" || "$port_change_choice" == "2" ]]; then
-                EXEC_ARGS=$(get_exec_args)
-
-cat <<EOF_SVC > /etc/systemd/system/vk-proxy.service
-[Unit]
-Description=VK TURN Proxy Service
-After=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/root
-LimitNOFILE=1048576
-ExecStart=/root/server-linux-$SYS_ARCH $EXEC_ARGS
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-EOF_SVC
-                systemctl daemon-reload
-                if systemctl restart vk-proxy; then
-                    echo -e "${CYAN}Служба прокси успешно перезапущена!${NC}"
-                else
-                    echo -e "${RED}Ошибка перезапуска службы. Проверьте логи.${NC}"
-                fi
-            fi
-            
-            read -n 1 -s -r -p "Нажми любую клавишу..."
-            ;;
+            if [[ "$port_change_choice" == "1" || "$port_change_choice" == "2" ]]; then apply_and_restart_service; fi
+            read -n 1 -s -r -p "Нажми любую клавишу..." ;;
         8)
-            if [[ -f /root/.vk-proxy-custom-args ]] && [[ -n "$(cat /root/.vk-proxy-custom-args)" ]]; then
-                echo -e "${YELLOW}⚠️ ВНИМАНИЕ: У вас активны кастомные аргументы запуска!${NC}"
-                echo -e "Флаг сохранится, но ${RED}НЕ ПРИМЕНИТСЯ${NC} к службе, пока вы не сбросите кастомные настройки (пункт 10)."
-                echo ""
-            fi
-
-            if [[ -f /root/.vk-proxy-vless ]] && [[ "$(cat /root/.vk-proxy-vless)" == "1" ]]; then
-                echo "0" > /root/.vk-proxy-vless
-                echo -e "${YELLOW}Флаг -vless будет отключен.${NC}"
-            else
-                echo "1" > /root/.vk-proxy-vless
-                echo -e "${GREEN}Флаг -vless будет добавлен.${NC}"
-            fi
-
-            EXEC_ARGS=$(get_exec_args)
-
-cat <<EOF_SVC > /etc/systemd/system/vk-proxy.service
-[Unit]
-Description=VK TURN Proxy Service
-After=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/root
-LimitNOFILE=1048576
-ExecStart=/root/server-linux-$SYS_ARCH $EXEC_ARGS
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-EOF_SVC
-            systemctl daemon-reload
-            if systemctl is-active --quiet vk-proxy; then systemctl restart vk-proxy; fi
-            echo -e "${GREEN}Конфигурация обновлена и служба перезапущена!${NC}"
-            sleep 2
-            ;;
+            echo -e "${CYAN}Настройка VLESS:${NC}"
+            echo "1) Отключить флаги VLESS"
+            echo "2) Включить стандартный режим (-vless)"
+            echo "3) Включить режим Bond (-vless-bond)"
+            read -p "Ваш выбор [1-3]: " vless_choice
+            case "$vless_choice" in
+                1) set_conf "VLESS_MODE" "off"; echo -e "${YELLOW}VLESS отключен.${NC}" ;;
+                2) set_conf "VLESS_MODE" "vless"; echo -e "${GREEN}Включен флаг -vless.${NC}" ;;
+                3) set_conf "VLESS_MODE" "vless-bond"; echo -e "${GREEN}Включен флаг -vless-bond.${NC}" ;;
+            esac
+            apply_and_restart_service; sleep 1 ;;
         9)
-            echo ""
-            if [[ -f /root/.vk-proxy-custom-args ]] && [[ -n "$(cat /root/.vk-proxy-custom-args)" ]]; then
-                echo -e "${YELLOW}⚠️ ВНИМАНИЕ: У вас активны кастомные аргументы запуска!${NC}"
-                echo -e "Настройки DataChannel сохранятся, но ${RED}НЕ ПРИМЕНЯТСЯ${NC} к службе, пока вы не сбросите кастомные настройки (пункт 10)."
-                echo ""
-            fi
-
-            if [[ -f /root/.vk-proxy-dc-mode ]] && [[ "$(cat /root/.vk-proxy-dc-mode)" == "1" ]]; then
-                echo "0" > /root/.vk-proxy-dc-mode
-                echo -e "${YELLOW}Режим DataChannel будет отключен.${NC}"
+            if [[ "$(get_conf "DC_MODE")" == "1" ]]; then
+                set_conf "DC_MODE" "0"; echo -e "${YELLOW}DataChannel отключен.${NC}"
             else
-                echo -e "${CYAN}Настройка DataChannel (без TURN)${NC}"
+                echo -e "${CYAN}Настройка DataChannel${NC}"
                 echo "1) SaluteJazz"
                 echo "2) Яндекс Телемост"
-                read -p "Выберите сервис [1-2]: " dc_choice
-
+                read -p "Сервис [1-2]: " dc_choice
                 if [[ "$dc_choice" == "1" ]]; then
-                    read -p "Введи комнату (нажми Enter для 'any' - сервер создаст случайную, название и пароль смотрите в логах): " input_room
-                    input_room=${input_room:-any}
-                    echo "$input_room" > /root/.vk-proxy-jazz-room
-                    rm -f /root/.vk-proxy-yandex-link
-                    echo "1" > /root/.vk-proxy-dc-mode
-                    echo -e "${GREEN}Режим SaluteJazz DataChannel будет включен!${NC}"
+                    read -p "Комната (Enter для any): " input_room
+                    set_conf "JAZZ_ROOM" "${input_room:-any}"; set_conf "YANDEX_LINK" ""
+                    set_conf "DC_MODE" "1"; echo -e "${GREEN}SaluteJazz включен!${NC}"
                 elif [[ "$dc_choice" == "2" ]]; then
-                    read -p "Введи ссылку на звонок Yandex (начинается с https://telemost.yandex.ru/j/): " input_link
-                    if [[ -n "$input_link" ]]; then
-                        echo "$input_link" > /root/.vk-proxy-yandex-link
-                        rm -f /root/.vk-proxy-jazz-room
-                        echo "1" > /root/.vk-proxy-dc-mode
-                        echo -e "${GREEN}Режим Yandex Telemost DataChannel будет включен!${NC}"
-                    else
-                        echo -e "${RED}Ссылка не введена. Отмена.${NC}"
-                        sleep 2
-                        continue
-                    fi
-                else
-                    echo -e "${RED}Неверный выбор. Отмена.${NC}"
-                    sleep 2
-                    continue
+                    read -p "Ссылка Yandex: " input_link
+                    if [[ -n "$input_link" ]]; then set_conf "YANDEX_LINK" "$input_link"; set_conf "JAZZ_ROOM" ""; set_conf "DC_MODE" "1"; echo -e "${GREEN}Yandex включен!${NC}"; fi
                 fi
             fi
-
-            EXEC_ARGS=$(get_exec_args)
-
-cat <<EOF_SVC > /etc/systemd/system/vk-proxy.service
-[Unit]
-Description=VK TURN Proxy Service
-After=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/root
-LimitNOFILE=1048576
-ExecStart=/root/server-linux-$SYS_ARCH $EXEC_ARGS
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-EOF_SVC
-            systemctl daemon-reload
-            if systemctl is-active --quiet vk-proxy; then systemctl restart vk-proxy; fi
-            echo -e "${GREEN}Конфигурация обновлена и служба перезапущена!${NC}"
-            sleep 2
-            ;;
+            apply_and_restart_service; sleep 1 ;;
         10)
-            echo ""
-            echo -e "${CYAN}Кастомные аргументы запуска (Raw command)${NC}"
-            echo -e "Внимание: если задать кастомные аргументы, настройки портов, DataChannel и флага -vless из панели ${RED}будут игнорироваться${NC}!"
-            echo "Если меняешь внешний порт в этом режиме, не забудь открыть его в UFW вручную."
-            echo ""
-            echo -e "Текущие аргументы:"
-            if [[ -f /root/.vk-proxy-custom-args ]] && [[ -n "$(cat /root/.vk-proxy-custom-args)" ]]; then
-                echo -e "${YELLOW}$(cat /root/.vk-proxy-custom-args)${NC}"
-            else
-                echo -e "${GREEN}Не заданы (используется автоматический режим)${NC}"
-            fi
-            echo ""
-            echo "Введи новые аргументы (например: -listen 0.0.0.0:$PROXY_PORT -connect 127.0.0.1:$TARGET_PORT -vless)"
-            echo "Или просто нажми Enter, чтобы СБРОСИТЬ кастомные аргументы и вернуться к автоматике."
-            read -p "Аргументы: " input_custom
-            if [[ -z "$input_custom" ]]; then
-                rm -f /root/.vk-proxy-custom-args
-                echo -e "${GREEN}Сброшено на автоматический режим! Возвращаем стандартные флаги.${NC}"
-            else
-                echo "$input_custom" > /root/.vk-proxy-custom-args
-                echo -e "${GREEN}Кастомные аргументы сохранены!${NC}"
-            fi
-
-            EXEC_ARGS=$(get_exec_args)
-
-cat <<EOF_SVC > /etc/systemd/system/vk-proxy.service
-[Unit]
-Description=VK TURN Proxy Service
-After=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/root
-LimitNOFILE=1048576
-ExecStart=/root/server-linux-$SYS_ARCH $EXEC_ARGS
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-EOF_SVC
-            systemctl daemon-reload
-            if systemctl is-active --quiet vk-proxy; then systemctl restart vk-proxy; fi
-            echo -e "${GREEN}Служба перезапущена с новыми аргументами!${NC}"
-            read -n 1 -s -r -p "Нажми любую клавишу..."
-            ;;
-        11) 
-            echo ""
-            echo -e "${CYAN}Управление и установка VPN:${NC}"
+            echo -e "${CYAN}Настройки WRAP (Обфускация):${NC}"
+            echo "1) Включить/Выключить WRAP-обфускацию (-wrap)"
+            echo "2) Показать текущий WRAP ключ"
+            echo "3) Задать новый WRAP ключ / Сгенерировать случайный"
+            read -p "Выбор [1-3]: " wrap_choice
+            case "$wrap_choice" in
+                1)
+                    if [[ "$(get_conf "WRAP_ENABLED")" == "1" ]]; then
+                        set_conf "WRAP_ENABLED" "0"; echo -e "${YELLOW}WRAP отключен.${NC}"
+                    else
+                        set_conf "WRAP_ENABLED" "1"; echo -e "${GREEN}WRAP включен.${NC}"
+                    fi
+                    apply_and_restart_service
+                    ;;
+                2)
+                    CURRENT_WRAP_KEY=$(get_conf "WRAP_KEY")
+                    if [[ -n "$CURRENT_WRAP_KEY" ]]; then echo -e "Текущий ключ: ${YELLOW}$CURRENT_WRAP_KEY${NC}"; else echo -e "Ключ не задан (используется базовый/встроенный)"; fi
+                    ;;
+                3)
+                    echo -e "Вы можете вставить свой 64-символьный hex ключ."
+                    echo -e "Или введите ${CYAN}gen${NC}, чтобы сгенерировать случайный ключ."
+                    read -p "Ввод (или Enter для сброса): " input_wrap_key
+                    if [[ "$input_wrap_key" == "gen" ]]; then
+                        NEW_KEY=$(cat /dev/urandom | tr -dc 'a-f0-9' | fold -w 64 | head -n 1)
+                        set_conf "WRAP_KEY" "$NEW_KEY"
+                        echo -e "${GREEN}Сгенерирован и сохранен новый ключ: $NEW_KEY${NC}"
+                    else
+                        set_conf "WRAP_KEY" "$input_wrap_key"
+                        echo -e "${GREEN}Ключ обновлен!${NC}"
+                    fi
+                    apply_and_restart_service
+                    ;;
+            esac
+            read -n 1 -s -r -p "Нажми любую клавишу..." ;;
+        11)
+            echo -e "${CYAN}Кастомные аргументы (Raw command)${NC}"
+            echo -e "Внимание: при задании кастомных аргументов порты/VLESS/WRAP из панели игнорируются."
+            read -p "Введи аргументы (или Enter для сброса на авто): " input_custom
+            set_conf "CUSTOM_ARGS" "$input_custom"
+            if [[ -z "$input_custom" ]]; then echo -e "${GREEN}Сброшено на авто!${NC}"; else echo -e "${GREEN}Сохранено!${NC}"; fi
+            apply_and_restart_service; read -n 1 -s -r -p "Нажми любую клавишу..." ;;
+        12) 
+            echo -e "${CYAN}Управление VPN:${NC}"
             echo "1) WireGuard"
             echo "2) AmneziaWG"
             echo "3) Hysteria2"
-            read -p "Выбери вариант: " vpn_manage_choice
-            if [[ "$vpn_manage_choice" == "1" || "$vpn_manage_choice" == "2" || "$vpn_manage_choice" == "3" ]]; then
-                read -p "Вы точно хотите установить/управлять этим VPN? [y/N]: " confirm_vpn
-                if [[ "$confirm_vpn" =~ ^[Yy]$ ]]; then
-                    if [[ "$vpn_manage_choice" == "1" ]]; then
-                        if [ ! -f /root/wireguard-install.sh ]; then
-                            echo -e "${YELLOW}Установщик WireGuard не найден. Скачивание...${NC}"
-                            curl -sfLo /root/wireguard-install.sh https://raw.githubusercontent.com/angristan/wireguard-install/master/wireguard-install.sh
-                            chmod +x /root/wireguard-install.sh
-                        fi
-                        bash /root/wireguard-install.sh
-                    elif [[ "$vpn_manage_choice" == "2" ]]; then
-                        if [ ! -f /root/amneziawg-install.sh ]; then
-                            echo -e "${YELLOW}Установщик AmneziaWG не найден. Скачивание...${NC}"
-                            curl -sfLo /root/amneziawg-install.sh https://raw.githubusercontent.com/wiresock/amneziawg-install/main/amneziawg-install.sh
-                            chmod +x /root/amneziawg-install.sh
-                        fi
-                        bash /root/amneziawg-install.sh
-                    elif [[ "$vpn_manage_choice" == "3" ]]; then
-                        if [ ! -f /root/hysteria-install.sh ]; then
-                            echo -e "${YELLOW}Установщик Hysteria2 не найден. Скачивание...${NC}"
-                            curl -sfLo /root/hysteria-install.sh https://raw.githubusercontent.com/NedgNDG/hysteria2-install/main/hysteria-install.sh
-                            chmod +x /root/hysteria-install.sh
-                        fi
-                        bash /root/hysteria-install.sh
-                    fi
-                else
-                    echo -e "${YELLOW}Действие отменено.${NC}"
-                fi
-            else
-                echo -e "${RED}Неверный выбор.${NC}"
+            read -p "Выбор: " vpn_manage_choice
+            if [[ "$vpn_manage_choice" == "1" ]]; then
+                if [ ! -f /root/wireguard-install.sh ]; then curl -sfLo /root/wireguard-install.sh https://raw.githubusercontent.com/angristan/wireguard-install/master/wireguard-install.sh; chmod +x /root/wireguard-install.sh; fi
+                bash /root/wireguard-install.sh
+            elif [[ "$vpn_manage_choice" == "2" ]]; then
+                if [ ! -f /root/amneziawg-install.sh ]; then curl -sfLo /root/amneziawg-install.sh https://raw.githubusercontent.com/wiresock/amneziawg-install/main/amneziawg-install.sh; chmod +x /root/amneziawg-install.sh; fi
+                bash /root/amneziawg-install.sh
+            elif [[ "$vpn_manage_choice" == "3" ]]; then
+                if [ ! -f /root/hysteria-install.sh ]; then curl -sfLo /root/hysteria-install.sh https://raw.githubusercontent.com/NedgNDG/hysteria2-install/main/hysteria-install.sh; chmod +x /root/hysteria-install.sh; fi
+                bash /root/hysteria-install.sh
             fi
-            read -n 1 -s -r -p "Нажми любую клавишу..." 
-            ;;
-        12)
-            echo ""
-            echo -e "${CYAN}Доступные конфигурации клиентов:${NC}"
-            
-            # Собираем массив файлов из /root (включая 1 уровень вложенности, игнорируя скрытые папки)
+            read -n 1 -s -r -p "Нажми любую клавишу..." ;;
+        13)
             CLIENT_CONFS=()
-            while IFS= read -r file; do
-                CLIENT_CONFS+=("$file")
-            done < <(find /root -maxdepth 2 -name ".*" -prune -o -type f \( -name "*.conf" -o -name "*.yaml" -o -name "*.yml" -o -name "*.json" -o -name "*.txt" \) -print 2>/dev/null)
-
-            if [ ${#CLIENT_CONFS[@]} -eq 0 ]; then
-                echo -e "${RED}Файлы конфигурации клиентов (.conf, .yaml, .txt...) не найдены в /root/${NC}"
-                echo -e "${YELLOW}Возможно, установщик Hysteria2 не сохранил конфиг в виде файла, а просто вывел ссылку (hy2://...) в консоль при установке.${NC}"
-            else
-                for i in "${!CLIENT_CONFS[@]}"; do
-                    # Красиво выводим имя файла с путем (чтобы было видно, если он в папке)
-                    echo "$((i+1)). ${CLIENT_CONFS[$i]}"
-                done
-                echo ""
-                read -p "Выбери номер клиента для показа QR-кода (или 0 для отмены): " qr_choice
-                if [[ "$qr_choice" == "0" ]]; then
-                    continue
-                elif [[ "$qr_choice" -ge 1 && "$qr_choice" -le ${#CLIENT_CONFS[@]} ]]; then
-                    TARGET_CONF="${CLIENT_CONFS[$((qr_choice-1))]}"
-                    echo -e "${GREEN}QR-код для $(basename "$TARGET_CONF"):${NC}"
-                    
-                    qrencode -t ansiutf8 < "$TARGET_CONF"
-                else
-                    echo -e "${RED}Неверный выбор.${NC}"
-                fi
-            fi
-            read -n 1 -s -r -p "Нажми любую клавишу..." 
-            ;;
-        13) journalctl -u vk-proxy -n 20 --no-pager; read -n 1 -s -r -p "Нажми любую клавишу..." ;;
+            while IFS= read -r file; do CLIENT_CONFS+=("$file"); done < <(find "$CLIENTS_DIR" -type f \( -name "*.conf" -o -name "*.yaml" -o -name "*.yml" -o -name "*.json" -o -name "*.txt" \) -print 2>/dev/null)
+            if [ ${#CLIENT_CONFS[@]} -gt 0 ]; then
+                echo -e "${CYAN}Доступные конфигурации в $CLIENTS_DIR:${NC}"
+                for i in "${!CLIENT_CONFS[@]}"; do echo "$((i+1)). $(basename "${CLIENT_CONFS[$i]}")"; done
+                read -p "Номер файла (или 0): " qr_choice
+                if [[ "$qr_choice" -ge 1 && "$qr_choice" -le ${#CLIENT_CONFS[@]} ]]; then qrencode -t ansiutf8 < "${CLIENT_CONFS[$((qr_choice-1))]}"; fi
+            else echo -e "${RED}Файлы конфигураций не найдены в $CLIENTS_DIR.${NC}"; fi
+            read -n 1 -s -r -p "Нажми любую клавишу..." ;;
         14)
-            echo -e "${YELLOW}Скачивание обновления панели...${NC}"
-            bash <(curl -sfL --connect-timeout 10 "$INSTALLER_URL") --update-panel
-            echo -e "${GREEN}Панель обновлена! Перезапустите команду vk-panel.${NC}"
-            exit 0 ;;
+            echo -e "${CYAN}Оптимизация сети (TCP BBR)${NC}"
+            if command -v sysctl &> /dev/null; then
+                CURRENT_BBR=$(sysctl net.ipv4.tcp_congestion_control 2>/dev/null | awk '{print $3}')
+                if [[ "$CURRENT_BBR" == "bbr" ]]; then
+                    echo -e "${GREEN}TCP BBR уже включен и работает! Ваш сервер оптимизирован.${NC}"
+                else
+                    echo -e "Текущий алгоритм контроля перегрузки: ${YELLOW}${CURRENT_BBR:-неизвестно}${NC}"
+                    read -p "Включить TCP BBR для ускорения сети? [y/N]: " enable_bbr
+                    if [[ "$enable_bbr" =~ ^[Yy]$ ]]; then
+                        echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+                        echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+                        sysctl -p > /dev/null 2>&1
+                        echo -e "${GREEN}TCP BBR успешно включен! Скорость передачи данных должна улучшиться.${NC}"
+                    else
+                        echo -e "${YELLOW}Действие отменено.${NC}"
+                    fi
+                fi
+            else
+                echo -e "${RED}Утилита sysctl не найдена в системе. Невозможно управлять BBR.${NC}"
+            fi
+            read -n 1 -s -r -p "Нажми любую клавишу..." ;;
+        15)
+            echo -e "${CYAN}Создание резервной копии (Backup)${NC}"
+            BACKUP_NAME="vk-proxy-backup-$(date +%Y-%m-%d_%H-%M-%S).tar.gz"
+            BACKUP_PATH="/root/$BACKUP_NAME"
+            echo "Архивация директорий конфигурации..."
+            tar -czf "$BACKUP_PATH" "$CONFIG_DIR" "$CLIENTS_DIR" 2>/dev/null
+            if [ -f "$BACKUP_PATH" ]; then
+                echo -e "${GREEN}Резервная копия успешно создана!${NC}"
+                echo -e "Путь к файлу: ${YELLOW}$BACKUP_PATH${NC}"
+                echo "💡 Сохраните этот файл на свой компьютер (через FileZilla/SFTP), чтобы не потерять настройки при переустановке сервера."
+            else
+                echo -e "${RED}Ошибка: Не удалось создать архив.${NC}"
+            fi
+            read -n 1 -s -r -p "Нажми любую клавишу..." ;;
+        16) journalctl -u vk-proxy -n 20 --no-pager; read -n 1 -s -r -p "Нажми любую клавишу..." ;;
+        17) bash <(curl -sfL --connect-timeout 10 "$INSTALLER_URL") --update-panel; echo -e "${GREEN}Обновлено!${NC}"; exit 0 ;;
         0) clear; exit 0 ;;
-        *) echo "Неверный выбор!"; sleep 1 ;;
     esac
 done
 EOF
 chmod +x /usr/local/bin/vk-panel
 }
 
-# 0. Быстрое обновление только панели (скрытый режим)
-if [[ "$1" == "--update-panel" ]]; then
-    echo "Обновление панели vk-panel..."
-    create_panel
-    exit 0
-fi
+if [[ "$1" == "--update-panel" ]]; then echo "Обновление vk-panel..."; create_panel; exit 0; fi
 
 clear
 echo "==================================================="
@@ -830,12 +616,7 @@ echo "   Ультимативный Установщик VPN + vk-turn-proxy    
 echo "==================================================="
 echo ""
 
-if [[ -f /root/.vk-proxy-yandex-dc ]]; then
-    mv /root/.vk-proxy-yandex-dc /root/.vk-proxy-dc-mode
-fi
-
-# 1. Проверка зависимостей
-echo "[1/9] Установка зависимостей (curl, wget, jq, ufw, qrencode)..."
+echo "[1/10] Установка зависимостей (curl, wget, jq, ufw, qrencode)..."
 if command -v apt-get &> /dev/null; then
     apt-get update -y > /dev/null 2>&1
     apt-get install -y curl wget jq ufw qrencode > /dev/null 2>&1
@@ -844,158 +625,100 @@ elif command -v yum &> /dev/null; then
     yum install -y ufw qrencode > /dev/null 2>&1
 fi
 
-# 2. Архитектура
 ARCH=$(uname -m)
 if [[ "$ARCH" == "x86_64" ]]; then SYS_ARCH="amd64"; else SYS_ARCH="arm64"; fi
 
-# 3. Выбор реализации
 echo ""
-echo "[2/9] Выбор реализации vk-turn-proxy..."
-echo -e "1) cacggghp/vk-turn-proxy (Оригинал, по умолчанию)"
+echo "[2/10] Выбор реализации vk-turn-proxy..."
+echo -e "1) cacggghp/vk-turn-proxy (Оригинал)"
 echo -e "2) kiper292/vk-turn-proxy (Форк, \e[9mподдержка WB Stream\e[0m)"
-echo -e "3) Urtyom-Alyanov/turn-proxy (Ядро на Rust, только amd64/x86_64)"
+echo -e "3) Urtyom-Alyanov/turn-proxy (Ядро на Rust)"
 echo -e "4) Moroka8/vk-turn-proxy (Форк)"
-echo -e "5) alxmcp/vk-turn-proxy (Форк, \e[9mподдержка DataChannel SaluteJazz / Yandex\e[0m)"
+echo -e "5) alxmcp/vk-turn-proxy (Форк, \e[9mподдержка Yandex / SaluteJazz\e[0m)"
 echo -e "6) samosvalishe/vk-turn-proxy (Форк)"
-echo -e "7) Сторонний репозиторий GitHub ИЛИ прямая ссылка на бинарник"
-read -p "Твой выбор [1-7]: " repo_choice
+echo -e "7) Сторонний репозиторий GitHub ИЛИ прямая ссылка"
+read -p "Твой выбор [1-7, Enter для 6]: " repo_choice
 
-case "$repo_choice" in
-  2) PROXY_REPO="kiper292/vk-turn-proxy"; echo "go" > /root/.vk-proxy-core-type ;;
-  3) PROXY_REPO="Urtyom-Alyanov/turn-proxy"; echo "rust" > /root/.vk-proxy-core-type ;;
-  4) PROXY_REPO="Moroka8/vk-turn-proxy"; echo "go" > /root/.vk-proxy-core-type ;;
-  5) PROXY_REPO="alxmcp/vk-turn-proxy"; echo "go" > /root/.vk-proxy-core-type ;;
-  6) PROXY_REPO="samosvalishe/vk-turn-proxy"; echo "go" > /root/.vk-proxy-core-type ;;
+case "${repo_choice:-6}" in
+  1) PROXY_REPO="cacggghp/vk-turn-proxy"; set_conf "CORE_TYPE" "go" ;;
+  2) PROXY_REPO="kiper292/vk-turn-proxy"; set_conf "CORE_TYPE" "go" ;;
+  3) PROXY_REPO="Urtyom-Alyanov/turn-proxy"; set_conf "CORE_TYPE" "rust" ;;
+  4) PROXY_REPO="Moroka8/vk-turn-proxy"; set_conf "CORE_TYPE" "go" ;;
+  5) PROXY_REPO="alxmcp/vk-turn-proxy"; set_conf "CORE_TYPE" "go" ;;
+  6) PROXY_REPO="samosvalishe/vk-turn-proxy"; set_conf "CORE_TYPE" "go" ;;
   7)
-     read -p "Введи репозиторий (owner/repo) ИЛИ прямую ссылку на бинарный файл: " custom_input
-     if [[ "$custom_input" =~ ^https?:// ]] && [[ ! "$custom_input" =~ ^https?://(www\.)?github\.com/[^/]+/[^/]+/?$ ]]; then
-         PROXY_REPO="Custom_Direct_Link"
-         DOWNLOAD_URL="$custom_input"
-         LATEST_TAG="Custom"
-     else
-         PROXY_REPO=$(echo "$custom_input" | sed -E 's|^https?://github\.com/||' | sed 's/\.git$//' | awk -F/ '{print $1"/"$2}')
-         if [[ -z "$PROXY_REPO" || "$PROXY_REPO" != *"/"* || "$PROXY_REPO" == "/" ]]; then
-             echo "Неверный формат. Используем оригинал."
-             PROXY_REPO="cacggghp/vk-turn-proxy"
-             echo "go" > /root/.vk-proxy-core-type
-         fi
-     fi
-     
-     if [[ "$PROXY_REPO" == "Custom_Direct_Link" || "$PROXY_REPO" != "cacggghp/vk-turn-proxy" ]]; then
-         echo -e "\nКакой тип аргументов использовать для этого кастомного ядра?"
-         echo "1) Стандартные (Go: -listen 0.0.0.0:PORT -connect 127.0.0.1:PORT)"
-         echo "2) Rust (Urtyom-Alyanov: -N -l 0.0.0.0:PORT -p 127.0.0.1:PORT)"
-         echo "3) Задать вручную (Raw command)"
-         read -p "Твой выбор [1-3]: " custom_core_type
-         if [[ "$custom_core_type" == "2" ]]; then
-             echo "rust" > /root/.vk-proxy-core-type
-         elif [[ "$custom_core_type" == "3" ]]; then
-             echo "custom" > /root/.vk-proxy-core-type
-         else
-             echo "go" > /root/.vk-proxy-core-type
-         fi
-     fi
-     ;;
-  *) PROXY_REPO="cacggghp/vk-turn-proxy"; echo "go" > /root/.vk-proxy-core-type ;;
+    read -p "Введи репозиторий (owner/repo) ИЛИ прямую ссылку: " custom_input
+    if [[ "$custom_input" =~ ^https?:// ]] && [[ ! "$custom_input" =~ ^https?://(www\.)?github\.com/[^/]+/[^/]+/?$ ]]; then
+        PROXY_REPO="Прямая ссылка"
+        DOWNLOAD_URL_DIRECT="$custom_input"
+    else
+        PROXY_REPO=$(echo "$custom_input" | sed -E 's|^https?://github\.com/||' | sed 's/\.git$//' | awk -F/ '{print $1"/"$2}')
+        if [[ -z "$PROXY_REPO" || "$PROXY_REPO" != *"/"* || "$PROXY_REPO" == "/" ]]; then PROXY_REPO="samosvalishe/vk-turn-proxy"; set_conf "CORE_TYPE" "go"; fi
+    fi
+    echo -e "\nКакой тип аргументов использовать?"
+    echo "1) Стандартные (Go)"
+    echo "2) Rust"
+    echo "3) Задать вручную (Raw command)"
+    read -p "Твой выбор [1-3]: " custom_core_type
+    if [[ "$custom_core_type" == "2" ]]; then set_conf "CORE_TYPE" "rust"
+    elif [[ "$custom_core_type" == "3" ]]; then set_conf "CORE_TYPE" "custom"
+    else set_conf "CORE_TYPE" "go"; fi
+    ;;
+  *) PROXY_REPO="samosvalishe/vk-turn-proxy"; set_conf "CORE_TYPE" "go" ;;
 esac
+set_conf "PROXY_REPO" "$PROXY_REPO"
 
-# 4. Выбор порта прокси
 echo ""
-echo "[3/9] Настройка внешнего порта прокси (к нему будут подключаться клиенты через VK)..."
+echo "[3/10] Настройка внешнего порт прокси..."
 DEFAULT_PROXY_PORT=56000
-if [[ -f /root/.vk-proxy-core-type ]] && [[ "$(cat /root/.vk-proxy-core-type)" == "rust" ]]; then
-    DEFAULT_PROXY_PORT=56040
-fi
+[[ "$(get_conf "CORE_TYPE")" == "rust" ]] && DEFAULT_PROXY_PORT=56040
 
 while true; do
-    read -p "Введи внешний порт прокси (нажми Enter для $DEFAULT_PROXY_PORT): " INPUT_PROXY_PORT
-    if [[ -z "$INPUT_PROXY_PORT" ]]; then
-        INPUT_PROXY_PORT="$DEFAULT_PROXY_PORT"
-    fi
-
+    read -p "Введи внешний порт (Enter для $DEFAULT_PROXY_PORT): " INPUT_PROXY_PORT
+    INPUT_PROXY_PORT=${INPUT_PROXY_PORT:-$DEFAULT_PROXY_PORT}
     if [[ "$INPUT_PROXY_PORT" =~ ^[0-9]+$ ]] && [ "$INPUT_PROXY_PORT" -ge 1 ] && [ "$INPUT_PROXY_PORT" -le 65535 ]; then
-        if command -v ss &> /dev/null && ss -tuln | grep -qE ":$INPUT_PROXY_PORT\b"; then
-            echo "⚠️ Ошибка: Порт $INPUT_PROXY_PORT уже занят другим приложением. Выбери другой."
-        else
-            PROXY_PORT="$INPUT_PROXY_PORT"
-            break
-        fi
-    else
-        echo "⚠️ Ошибка: Введи корректный порт от 1 до 65535."
-    fi
+        set_conf "PROXY_PORT" "$INPUT_PROXY_PORT"
+        PROXY_PORT=$INPUT_PROXY_PORT
+        break
+    else echo "⚠️ Некорректный порт."; fi
 done
 
-echo "$PROXY_PORT" > /root/.vk-proxy-port
-echo "Выбран внешний порт: $PROXY_PORT"
-
-# Выбор использования флага -vless при установке
 echo ""
-echo "[4/9] Использовать флаг -vless?"
-echo "Некоторые клиенты (например, VLESS) и обновленные ядра могут использовать этот флаг, даёт возможность гнать трафик по этому протоколу."
-read -p "Включить флаг -vless по умолчанию? [y/N]: " use_vless
-if [[ "$use_vless" =~ ^[Yy]$ ]]; then
-    echo "1" > /root/.vk-proxy-vless
-else
-    echo "0" > /root/.vk-proxy-vless
-fi
+echo "[4/10] Настройка VLESS..."
+echo "1) Не использовать VLESS флаги"
+echo "2) Включить стандартный VLESS (-vless)"
+echo "3) Включить VLESS Bond (-vless-bond)"
+read -p "Выбор [1-3, Enter для 1]: " vless_setup
+if [[ "$vless_setup" == "3" ]]; then set_conf "VLESS_MODE" "vless-bond"
+elif [[ "$vless_setup" == "2" ]]; then set_conf "VLESS_MODE" "vless"
+else set_conf "VLESS_MODE" "off"; fi
 
-# 5. Выбор типа установки и настройка целевого локального порта
 echo ""
-echo "[5/9] Настройка локального порта (цель для прокси)..."
-echo "Куда прокси должен перенаправлять трафик?"
-echo "1) Установить WireGuard с нуля (автоматически установит и привяжет порт)"
-echo "2) Установить AmneziaWG с нуля (автоматически установит и привяжет порт)"
-echo "3) Установить Hysteria2 с нуля (автоматически установит и привяжет порт)"
+echo "[5/10] Настройка локального порта (цель для прокси)..."
+echo "1) Установить WireGuard с нуля"
+echo "2) Установить AmneziaWG с нуля"
+echo "3) Установить Hysteria2 с нуля"
 echo "4) Ввести порт вручную (если WG/AWG, Hysteria2, Xray или 3X-UI уже установлены)"
-read -p "Твой выбор [1-4]: " port_setup_choice
+read -p "Выбор [1-4]: " port_setup_choice
 
 TARGET_PORT=""
-
 if [[ "$port_setup_choice" == "4" ]]; then
-    echo ""
-    read -p "Введи локальный порт (например, 51820 для WG/AWG, 443 для Hysteria2/Xray/VLESS): " manual_port
-    if [[ "$manual_port" =~ ^[0-9]+$ ]] && [ "$manual_port" -ge 1 ] && [ "$manual_port" -le 65535 ]; then
-        TARGET_PORT="$manual_port"
-        echo "Выбран ручной порт: $TARGET_PORT"
-    else
-        echo "Ошибка: введено некорректное значение порта. Используем стандартный порт: 51820"
-        TARGET_PORT=51820
-    fi
+    read -p "Введи локальный порт (например, 51820 или 443): " manual_port
+    TARGET_PORT=${manual_port:-51820}
 elif [[ "$port_setup_choice" == "3" ]]; then
-    echo ""
-    echo "[6/9] Установка и поиск порта Hysteria2..."
-    shopt -s nullglob
-    HYS_CONFS=(/etc/hysteria/*.yaml /etc/hysteria/*.json)
-    shopt -u nullglob
-
+    shopt -s nullglob; HYS_CONFS=(/etc/hysteria/*.yaml /etc/hysteria/*.json); shopt -u nullglob
     if [ ${#HYS_CONFS[@]} -gt 0 ]; then
         echo "Найдены существующие конфигурации Hysteria2."
         read -p "Хочешь запустить установщик Hysteria2? (выбери N, если Hysteria2 уже настроен) [y/N]: " run_hys
         if [[ "$run_hys" =~ ^[Yy]$ ]]; then
-            if curl -sfLo /root/hysteria-install.sh https://raw.githubusercontent.com/NedgNDG/hysteria2-install/main/hysteria-install.sh; then
-                chmod +x /root/hysteria-install.sh
-                bash /root/hysteria-install.sh
-            else
-                echo "❌ Ошибка скачивания установщика Hysteria2."
-            fi
-            shopt -s nullglob
-            HYS_CONFS=(/etc/hysteria/*.yaml /etc/hysteria/*.json)
-            shopt -u nullglob
-        else
-            echo "Пропускаем установку Hysteria2..."
+            curl -sfLo /root/hysteria-install.sh https://raw.githubusercontent.com/NedgNDG/hysteria2-install/main/hysteria-install.sh; bash /root/hysteria-install.sh
+            shopt -s nullglob; HYS_CONFS=(/etc/hysteria/*.yaml /etc/hysteria/*.json); shopt -u nullglob
         fi
     else
-        if curl -sfLo /root/hysteria-install.sh https://raw.githubusercontent.com/NedgNDG/hysteria2-install/main/hysteria-install.sh; then
-            chmod +x /root/hysteria-install.sh
-            bash /root/hysteria-install.sh
-        else
-            echo "❌ Ошибка скачивания установщика Hysteria2."
-        fi
-        shopt -s nullglob
-        HYS_CONFS=(/etc/hysteria/*.yaml /etc/hysteria/*.json)
-        shopt -u nullglob
+        curl -sfLo /root/hysteria-install.sh https://raw.githubusercontent.com/NedgNDG/hysteria2-install/main/hysteria-install.sh; bash /root/hysteria-install.sh
+        shopt -s nullglob; HYS_CONFS=(/etc/hysteria/*.yaml /etc/hysteria/*.json); shopt -u nullglob
     fi
-
+    
     if [ ${#HYS_CONFS[@]} -eq 1 ]; then
         TARGET_PORT=$(grep -i -oP -m 1 '^listen:\s*(?:.*:)?\K\d+' "${HYS_CONFS[0]}")
         echo "Автоматически выбран конфиг: ${HYS_CONFS[0]}"
@@ -1008,47 +731,20 @@ elif [[ "$port_setup_choice" == "3" ]]; then
             TARGET_PORT=$(grep -i -oP -m 1 '^listen:\s*(?:.*:)?\K\d+' "${HYS_CONFS[$((conf_choice-1))]}")
         fi
     fi
-
-    if [[ -z "$TARGET_PORT" ]]; then
-        read -p "Не удалось найти порт. Введи целевой порт вручную: " TARGET_PORT
-    else
-        echo "Порт определен: $TARGET_PORT"
-    fi
 elif [[ "$port_setup_choice" == "2" ]]; then
-    echo ""
-    echo "[6/9] Установка и поиск порта AmneziaWG..."
-    shopt -s nullglob
-    AWG_CONFS=(/etc/amneziawg/*.conf /etc/amnezia/amneziawg/*.conf)
-    shopt -u nullglob
-
+    shopt -s nullglob; AWG_CONFS=(/etc/amneziawg/*.conf /etc/amnezia/amneziawg/*.conf); shopt -u nullglob
     if [ ${#AWG_CONFS[@]} -gt 0 ]; then
         echo "Найдены существующие конфигурации AmneziaWG."
         read -p "Хочешь запустить установщик AmneziaWG? (выбери N, если AWG уже настроен) [y/N]: " run_awg
         if [[ "$run_awg" =~ ^[Yy]$ ]]; then
-            if curl -sfLo /root/amneziawg-install.sh https://raw.githubusercontent.com/wiresock/amneziawg-install/main/amneziawg-install.sh; then
-                chmod +x /root/amneziawg-install.sh
-                bash /root/amneziawg-install.sh
-            else
-                echo "❌ Ошибка скачивания установщика AmneziaWG."
-            fi
-            shopt -s nullglob
-            AWG_CONFS=(/etc/amneziawg/*.conf /etc/amnezia/amneziawg/*.conf)
-            shopt -u nullglob
-        else
-            echo "Пропускаем установку AmneziaWG..."
+            curl -sfLo /root/amneziawg-install.sh https://raw.githubusercontent.com/wiresock/amneziawg-install/main/amneziawg-install.sh; bash /root/amneziawg-install.sh
+            shopt -s nullglob; AWG_CONFS=(/etc/amneziawg/*.conf /etc/amnezia/amneziawg/*.conf); shopt -u nullglob
         fi
     else
-        if curl -sfLo /root/amneziawg-install.sh https://raw.githubusercontent.com/wiresock/amneziawg-install/main/amneziawg-install.sh; then
-            chmod +x /root/amneziawg-install.sh
-            bash /root/amneziawg-install.sh
-        else
-            echo "❌ Ошибка скачивания установщика AmneziaWG."
-        fi
-        shopt -s nullglob
-        AWG_CONFS=(/etc/amneziawg/*.conf /etc/amnezia/amneziawg/*.conf)
-        shopt -u nullglob
+        curl -sfLo /root/amneziawg-install.sh https://raw.githubusercontent.com/wiresock/amneziawg-install/main/amneziawg-install.sh; bash /root/amneziawg-install.sh
+        shopt -s nullglob; AWG_CONFS=(/etc/amneziawg/*.conf /etc/amnezia/amneziawg/*.conf); shopt -u nullglob
     fi
-
+    
     if [ ${#AWG_CONFS[@]} -eq 1 ]; then
         TARGET_PORT=$(grep -oP 'ListenPort\s*=\s*\K\d+' "${AWG_CONFS[0]}")
         echo "Автоматически выбран конфиг: ${AWG_CONFS[0]}"
@@ -1061,47 +757,20 @@ elif [[ "$port_setup_choice" == "2" ]]; then
             TARGET_PORT=$(grep -oP 'ListenPort\s*=\s*\K\d+' "${AWG_CONFS[$((conf_choice-1))]}")
         fi
     fi
-
-    if [[ -z "$TARGET_PORT" ]]; then
-        read -p "Не удалось найти порт. Введи целевой порт вручную: " TARGET_PORT
-    else
-        echo "Порт определен: $TARGET_PORT"
-    fi
 else
-    echo ""
-    echo "[6/9] Установка и поиск порта WireGuard..."
-    shopt -s nullglob
-    WG_CONFS=(/etc/wireguard/*.conf)
-    shopt -u nullglob
-
+    shopt -s nullglob; WG_CONFS=(/etc/wireguard/*.conf); shopt -u nullglob
     if [ ${#WG_CONFS[@]} -gt 0 ]; then
         echo "Найдены существующие конфигурации WireGuard."
         read -p "Хочешь запустить установщик WireGuard? (выбери N, если WG уже настроен) [y/N]: " run_wg
         if [[ "$run_wg" =~ ^[Yy]$ ]]; then
-            if curl -sfLo /root/wireguard-install.sh https://raw.githubusercontent.com/angristan/wireguard-install/master/wireguard-install.sh; then
-                chmod +x /root/wireguard-install.sh
-                bash /root/wireguard-install.sh
-            else
-                echo "❌ Ошибка скачивания установщика WireGuard."
-            fi
-            shopt -s nullglob
-            WG_CONFS=(/etc/wireguard/*.conf)
-            shopt -u nullglob
-        else
-            echo "Пропускаем установку WireGuard..."
+            curl -sfLo /root/wireguard-install.sh https://raw.githubusercontent.com/angristan/wireguard-install/master/wireguard-install.sh; bash /root/wireguard-install.sh
+            shopt -s nullglob; WG_CONFS=(/etc/wireguard/*.conf); shopt -u nullglob
         fi
     else
-        if curl -sfLo /root/wireguard-install.sh https://raw.githubusercontent.com/angristan/wireguard-install/master/wireguard-install.sh; then
-            chmod +x /root/wireguard-install.sh
-            bash /root/wireguard-install.sh
-        else
-            echo "❌ Ошибка скачивания установщика WireGuard."
-        fi
-        shopt -s nullglob
-        WG_CONFS=(/etc/wireguard/*.conf)
-        shopt -u nullglob
+        curl -sfLo /root/wireguard-install.sh https://raw.githubusercontent.com/angristan/wireguard-install/master/wireguard-install.sh; bash /root/wireguard-install.sh
+        shopt -s nullglob; WG_CONFS=(/etc/wireguard/*.conf); shopt -u nullglob
     fi
-
+    
     if [ ${#WG_CONFS[@]} -eq 1 ]; then
         TARGET_PORT=$(grep -oP 'ListenPort\s*=\s*\K\d+' "${WG_CONFS[0]}")
         echo "Автоматически выбран конфиг: ${WG_CONFS[0]}"
@@ -1114,35 +783,24 @@ else
             TARGET_PORT=$(grep -oP 'ListenPort\s*=\s*\K\d+' "${WG_CONFS[$((conf_choice-1))]}")
         fi
     fi
-
-    if [[ -z "$TARGET_PORT" ]]; then
-        read -p "Не удалось найти порт. Введи целевой порт вручную: " TARGET_PORT
-    else
-        echo "Порт определен: $TARGET_PORT"
-    fi
 fi
 
-echo "$TARGET_PORT" > /root/.vk-proxy-target-port
+if [[ -z "$TARGET_PORT" ]]; then
+    echo -e "\033[0;33m⚠️ Не удалось автоматически определить порт из конфигураций.\033[0m"
+    read -p "Введи целевой локальный порт вручную: " TARGET_PORT
+fi
+TARGET_PORT=${TARGET_PORT:-51820}
+set_conf "TARGET_PORT" "$TARGET_PORT"
 
-# 6. Скачивание ядра
 echo ""
-if [[ "$PROXY_REPO" == "Custom_Direct_Link" ]]; then
-    echo "[7/9] Загрузка ядра по прямой ссылке..."
-    if ! wget -q --show-progress -O /root/server-linux-$SYS_ARCH "$DOWNLOAD_URL"; then
-        echo "❌ Ошибка: Не удалось скачать ядро по прямой ссылке."
-        exit 1
-    fi
-    chmod +x /root/server-linux-$SYS_ARCH
-    echo "$LATEST_TAG" > /root/.vk-proxy-version
-    echo "Прямая ссылка" > /root/.vk-proxy-repo
-    PROXY_REPO="Прямая ссылка"
+echo "[6/10] Загрузка ядра ($SYS_ARCH)..."
+if [[ "$PROXY_REPO" == "Прямая ссылка" ]]; then
+    wget -q --show-progress -O /root/server-linux-$SYS_ARCH "$DOWNLOAD_URL_DIRECT"
+    LATEST_TAG="Custom"
 else
-    echo "[7/9] Загрузка ядра ($SYS_ARCH) из репозитория $PROXY_REPO..."
-    echo "$PROXY_REPO" > /root/.vk-proxy-repo
     API_URL="https://api.github.com/repos/${PROXY_REPO}/releases/latest"
     API_RESP=$(curl -s --connect-timeout 10 "$API_URL")
     LATEST_TAG=$(echo "$API_RESP" | jq -r ".tag_name")
-    DOWNLOAD_URL=""
 
     if [[ "$PROXY_REPO" == *"Urtyom-Alyanov"* ]]; then
         DOWNLOAD_URL=$(echo "$API_RESP" | jq -r '.assets[] | select(.name == "turn-proxy-server") | .browser_download_url' | head -n 1)
@@ -1150,79 +808,83 @@ else
         DOWNLOAD_URL=$(echo "$API_RESP" | jq -r '.assets[] | select(.name == "server-linux-'"${SYS_ARCH}"'") | .browser_download_url' | head -n 1)
     fi
 
-    if [[ "$DOWNLOAD_URL" == "null" || -z "$DOWNLOAD_URL" ]]; then
-        echo "❌ Ошибка: В репозитории $PROXY_REPO не найдено релизов для $SYS_ARCH."
-        exit 1
-    fi
-
-    if ! wget -q --show-progress -O /root/server-linux-$SYS_ARCH "$DOWNLOAD_URL"; then
-        echo "❌ Ошибка: Не удалось скачать ядро прокси. Проверьте интернет или лимиты GitHub API."
-        exit 1
-    fi
-    chmod +x /root/server-linux-$SYS_ARCH
-    echo "$LATEST_TAG" > /root/.vk-proxy-version
+    wget -q --show-progress -O /root/server-linux-$SYS_ARCH "$DOWNLOAD_URL"
 fi
+chmod +x /root/server-linux-$SYS_ARCH
+set_conf "VERSION" "$LATEST_TAG"
 
-# 7. Выбор кастомных аргументов запуска
 echo ""
-echo "[8/9] Настройка аргументов запуска..."
-if [[ -f /root/.vk-proxy-core-type ]] && [[ "$(cat /root/.vk-proxy-core-type)" == "custom" ]]; then
-    echo -e "Для вашего ядра выбран ручной режим (Raw)."
-    echo "Введи аргументы (например: -listen 0.0.0.0:$PROXY_PORT -connect 127.0.0.1:$TARGET_PORT -vless)"
-    read -p "Аргументы: " custom_args
-    if [[ -n "$custom_args" ]]; then
-        echo "$custom_args" > /root/.vk-proxy-custom-args
-        echo "Сохранены кастомные аргументы!"
-    else
-        echo "go" > /root/.vk-proxy-core-type
-        echo "⚠️ Аргументы не введены. Использован стандартный Go-пресет."
-    fi
+echo "[7/10] Настройка WRAP (Обфускация)..."
+echo "1) Пропустить (Не использовать WRAP)"
+echo "2) Включить WRAP (использовать встроенный/базовый ключ)"
+echo "3) Включить WRAP и сгенерировать случайный ключ (hex 64)"
+echo "4) Включить WRAP и ввести свой ключ вручную"
+read -p "Выбор [1-4, Enter для 1]: " wrap_setup_choice
+
+case "$wrap_setup_choice" in
+    2) 
+        set_conf "WRAP_ENABLED" "1"
+        echo "✅ WRAP включен с базовым ключом."
+        ;;
+    3) 
+        set_conf "WRAP_ENABLED" "1"
+        NEW_KEY=$(cat /dev/urandom | tr -dc 'a-f0-9' | fold -w 64 | head -n 1)
+        set_conf "WRAP_KEY" "$NEW_KEY"
+        echo "✅ Сгенерирован и сохранен новый ключ: $NEW_KEY"
+        ;;
+    4) 
+        set_conf "WRAP_ENABLED" "1"
+        read -p "Введи свой 64-символьный hex ключ: " input_wrap_key
+        set_conf "WRAP_KEY" "$input_wrap_key"
+        echo "✅ Ключ сохранен."
+        ;;
+    *) 
+        set_conf "WRAP_ENABLED" "0" 
+        echo "WRAP пропущен."
+        ;;
+esac
+
+echo ""
+echo "[8/10] Настройка кастомных аргументов (Raw command)..."
+echo "Обычно скрипт генерирует их автоматически на базе портов, но ты можешь задать команду вручную (Raw mode)."
+echo "Внимание: при задании кастомных аргументов настройки портов/VLESS/WRAP из панели игнорируются."
+read -p "Хочешь прописать кастомные аргументы запуска? [y/N]: " custom_args_choice
+
+if [[ "$custom_args_choice" =~ ^[Yy]$ ]]; then
+    read -p "Введи аргументы: " input_custom
+    set_conf "CUSTOM_ARGS" "$input_custom"
+    echo "✅ Сохранено."
 else
-    read -p "Хочешь прописать кастомные аргументы запуска вручную (отменить автоматику)? [y/N]: " use_custom_args
-    if [[ "$use_custom_args" =~ ^[Yy]$ ]]; then
-        echo "Введи аргументы (например: -listen 0.0.0.0:$PROXY_PORT -connect 127.0.0.1:$TARGET_PORT -vless)"
-        read -p "Аргументы: " custom_args
-        if [[ -n "$custom_args" ]]; then
-            echo "$custom_args" > /root/.vk-proxy-custom-args
-            echo "Сохранены кастомные аргументы!"
-        fi
-    else
-        rm -f /root/.vk-proxy-custom-args
-    fi
+    set_conf "CUSTOM_ARGS" ""
+    echo "Пропущено. Аргументы будут сгенерированы автоматически."
 fi
 
-# 8. Служба и Фаервол
 echo ""
-echo "[9/9] Настройка службы и фаервола..."
+echo "[9/10] Настройка службы..."
 systemctl stop vk-proxy 2>/dev/null || true
 
-# Формируем итоговые параметры для systemd
-if [[ -f /root/.vk-proxy-custom-args ]] && [[ -n "$(cat /root/.vk-proxy-custom-args)" ]]; then
-    EXEC_ARGS=$(cat /root/.vk-proxy-custom-args)
+CUSTOM_ARGS=$(get_conf "CUSTOM_ARGS")
+if [[ -n "$CUSTOM_ARGS" ]]; then
+    EXEC_ARGS="$CUSTOM_ARGS"
 else
-    if [[ -f /root/.vk-proxy-vless ]] && [[ "$(cat /root/.vk-proxy-vless)" == "1" ]]; then VLESS_FLAG=" -vless"; else VLESS_FLAG=""; fi
-    
-    DC_FLAG=""
-    if [[ -f /root/.vk-proxy-dc-mode ]] && [[ "$(cat /root/.vk-proxy-dc-mode)" == "1" ]]; then
-        if [[ -f /root/.vk-proxy-jazz-room ]]; then
-            DC_FLAG=" -jazz-room $(cat /root/.vk-proxy-jazz-room) -dc"
-        elif [[ -f /root/.vk-proxy-yandex-link ]]; then
-            DC_FLAG=" -yandex-link $(cat /root/.vk-proxy-yandex-link) -dc"
+    VLESS_FLAG=""
+    VLESS_MODE=$(get_conf "VLESS_MODE")
+    if [[ "$VLESS_MODE" == "vless" ]]; then VLESS_FLAG=" -vless"
+    elif [[ "$VLESS_MODE" == "vless-bond" ]]; then VLESS_FLAG=" -vless-bond"
+    fi
+
+    WRAP_FLAG=""
+    if [[ "$(get_conf "WRAP_ENABLED")" == "1" ]]; then
+        WRAP_FLAG=" -wrap"
+        WRAP_KEY=$(get_conf "WRAP_KEY")
+        if [[ -n "$WRAP_KEY" ]]; then
+            WRAP_FLAG="$WRAP_FLAG -wrap-key $WRAP_KEY"
         fi
     fi
 
-    CORE_TYPE="go"
-    if [[ -f /root/.vk-proxy-core-type ]]; then
-        CORE_TYPE=$(cat /root/.vk-proxy-core-type)
-    elif [[ "$PROXY_REPO" == *"Urtyom-Alyanov"* ]]; then
-        CORE_TYPE="rust"
-    fi
-
-    if [[ "$CORE_TYPE" == "rust" ]]; then
-        EXEC_ARGS="-N -l 0.0.0.0:$PROXY_PORT -p 127.0.0.1:$TARGET_PORT -n 10000$DC_FLAG$VLESS_FLAG"
-    else
-        EXEC_ARGS="-listen 0.0.0.0:$PROXY_PORT -connect 127.0.0.1:$TARGET_PORT$DC_FLAG$VLESS_FLAG"
-    fi
+    CORE_TYPE=$(get_conf "CORE_TYPE")
+    if [[ "$CORE_TYPE" == "rust" ]]; then EXEC_ARGS="-N -l 0.0.0.0:$PROXY_PORT -p 127.0.0.1:$TARGET_PORT -n 10000$VLESS_FLAG$WRAP_FLAG"
+    else EXEC_ARGS="-listen 0.0.0.0:$PROXY_PORT -connect 127.0.0.1:$TARGET_PORT$VLESS_FLAG$WRAP_FLAG"; fi
 fi
 
 cat <<EOF > /etc/systemd/system/vk-proxy.service
@@ -1247,27 +909,26 @@ systemctl daemon-reload
 systemctl enable vk-proxy > /dev/null 2>&1
 systemctl start vk-proxy
 
-if command -v ufw &> /dev/null; then
-    echo "Открываем порт $PROXY_PORT в UFW..."
-    ufw allow $PROXY_PORT/tcp > /dev/null 2>&1
-    ufw allow $PROXY_PORT/udp > /dev/null 2>&1
-fi
+if command -v ufw &> /dev/null; then ufw allow $PROXY_PORT/tcp > /dev/null 2>&1; ufw allow $PROXY_PORT/udp > /dev/null 2>&1; fi
 
-# 9. Панель
 echo ""
-echo "[+] Создание консольной панели (vk-panel)..."
+echo "[10/10] Создание панели (vk-panel)..."
 create_panel
 
 echo ""
 echo "==================================================="
 echo "✅ Установка полностью завершена!"
 echo "Трафик прокси направляется на локальный порт: $TARGET_PORT"
-echo "Внешний порт прокси для подключения: $PROXY_PORT"
+echo "Внешний порт прокси: $PROXY_PORT"
+echo "📁 Новые файлы клиентов будут сохраняться в: $CLIENTS_DIR"
 echo "==================================================="
 echo "⚠️  ВАЖНО ДЛЯ ОБЛАКОВ (Oracle, AWS, Yandex и др.):"
 echo "Обязательно открой порт $PROXY_PORT (TCP/UDP) в панели"
 echo "управления сервером на сайте твоего хостинг-провайдера!"
 echo "==================================================="
-echo "🔥 Для вызова панели управления просто напиши:"
-echo "vk-panel"
+echo "💡 Если у вас были старые или новые клиенты (конфиги) в /root,"
+echo "переместите их в $CLIENTS_DIR вручную для"
+echo "отображения в панели управления."
+echo "==================================================="
+echo "🔥 Для вызова панели управления просто напиши: vk-panel"
 echo "==================================================="
